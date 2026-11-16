@@ -1,7 +1,8 @@
 # SM-G955F / dream2lte adaptation
 
-Status: standalone display probe confirmed on the SM-G955F. XNU has not
-run on the phone.
+Status: standalone display probe and handoff loader execution confirmed on
+the SM-G955F. V3 reached the XNU entry address in emulation and awaits a
+device trial.
 
 The user reports a European Exynos S8+, TWRP, and a One UI 8 port.
 The supplied folder also includes universal8895-Repartitioner-80000.zip.
@@ -49,10 +50,53 @@ memory map, GPU, display-panel or touch support has been established.
 - The XNU workflow now supports `target_board=dream2lte`. This selection
   disables the XNU assembly entry marker and console writes into the donor's
   ramoops range. Use `xnu-kernel-dream2lte`, never the generic S8 artifact,
-  for this trial. The workflow selects Xcode 16 on macos-15 and reuses patch
-  0083 for the updated IORPC interface. This kernel build is pending.
+  for this trial. The workflow selects Xcode 16 on macos-15-intel and reuses patch
+  0083 for the updated IORPC interface.
 - Fixed initial boot arguments for packaging: `debug=0xc serial=3 cpus=1
   keepsyms=1 -enable_kprintf_spam -noprogress wdt=-1
   wdt_test=no_user_checkin a5touchprobe=0 s8touch=0 a5keys=0
   sweetbattery=0 sweetfb_native=1`. Do not supply an iOS root or a storage
   boot argument. The test targets the first on-screen XNU messages.
+- Code published to https://github.com/grzybekmuchomorek9000-hue/s8plus-xnu-port
+  with the user's authorization. The Intel run 43920842378 succeeded. No
+  phone captures or BOOT backups were staged for GitHub.
+- Assembled `research/dream2lte-capture/s8plus-xnu-handoff.img`
+  (16,863,248 bytes), SHA-256
+  `cc863856e97d96791a071f0130f167436ff543b68863a37bc71746bfd6f7c459`.
+  Verified the CI kernel checksum, original phone DTBH, ARM64 loader
+  header, partition fit, and storage-free test settings. The disassembler
+  reported a single apparent LSE opcode inside the K256 SHA-256 constant
+  table, not executable code.
+- Downloaded and verified iPhone X iOS 16.7.16 build 20H392 and extracted
+  OS.dmg, SystemOS.dmg, AppOS.dmg and d22ap.adt in `research/ipsw-x`.
+  The HFS+ system image requires a Linux environment. WSL is not installed
+  on this Windows host. These Apple files are excluded from Git.
+
+## First XNU attempt on device
+
+- Confirmed the phone in TWRP and matched its BOOT SHA-256 to the One UI
+  backup. Wrote the 16,863,248-byte handoff image and verified all of BOOT
+  before rebooting. Only BOOT was written.
+- The phone was seen again in TWRP. Restored One UI BOOT from the backup and
+  confirmed the restored SHA-256 matched the original. Rebooted normally.
+- No file in TWRP's pstore. The user's photo shows a short, corrupted
+  yellow/white/red framebuffer console. This is the handoff loader's
+  output. The photo does not establish that XNU executed.
+
+## Loader correction after the first device attempt
+
+- Confirmed that the Windows build's Zig objcopy output placed sections
+  differently from their ELF load addresses. An ARM64 emulation reached a
+  branch into zero bytes at the compiled FDT reader address. The build now
+  flattens ELF PT_LOAD segments explicitly and keeps their exact offsets.
+- The ARM64 wrapper also aligns the C loader to 4 KiB, required by its
+  page-relative loads and aligned vector table, and preserves the S-Boot DTB
+  pointer. It reports the original S-Boot load address on the screen.
+- V3 was built locally from the same XNU artifact. SHA-256
+  `ccec990568d2d15a40aaad858d06cb99ca259a12c218d9d6fcac43ae2ab47532`.
+  Emulated at three load positions, including +0x800. Verified the copied
+  loader byte for byte, the DTB pointer, the V3 screen glyphs, and the
+  handoff of the real packaged segments and boot arguments to XNU's entry
+  address. Emulation stopped at that address before executing XNU.
+- Next device test: flash V3 BOOT only, photograph its final screen, return
+  to TWRP, and restore the verified One UI BOOT backup.

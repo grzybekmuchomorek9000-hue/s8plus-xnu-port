@@ -299,7 +299,11 @@ static void rtc_bootarg(volatile struct boot_args *ba, uint64_t raw)
 	ba->CommandLine[at] = 0;
 }
 
+#ifdef DREAM2LTE_BRINGUP
+uint64_t dl_main(uintptr_t dtb, uint64_t el, uint64_t sctlr, uintptr_t sboot_image)
+#else
 uint64_t dl_main(uintptr_t dtb, uint64_t el, uint64_t sctlr)
+#endif
 {
 	*(volatile uint32_t *)DECON_TRIG = DECON_TRIG_UNMASK;
 #ifndef DREAM2LTE_BRINGUP
@@ -311,11 +315,15 @@ uint64_t dl_main(uintptr_t dtb, uint64_t el, uint64_t sctlr)
 	fill(0, 0, FB_W, FB_H, 0xff000000U);
 	fg = 0xffffff00U;
 #ifdef DREAM2LTE_BRINGUP
-	out("S8PLUS XNU HANDOFF TEST\n");
+	out("S8PLUS XNU HANDOFF TEST V3\n");
 #else
-    out("S8LOADER BEGIN  (ios-s8 dreamlte XNU loader)\n");
+	out("S8LOADER BEGIN  (ios-s8 dreamlte XNU loader)\n");
 #endif
 	fg = 0xffffffffU;
+#ifdef DREAM2LTE_BRINGUP
+	kv("S-Boot load", sboot_image);
+	out("\n");
+#endif
 	kv("EL", el);
 	kv("SCTLR", sctlr);
 	kv("DTB", dtb);

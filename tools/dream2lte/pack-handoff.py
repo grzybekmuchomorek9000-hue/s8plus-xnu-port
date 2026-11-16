@@ -15,6 +15,7 @@ def main():
     parser.add_argument('capture', type=Path)
     parser.add_argument('kernel_artifact', type=Path, help='extracted xnu-kernel-dream2lte')
     parser.add_argument('output', type=Path)
+    parser.add_argument('--loader', type=Path, help='use a specific built loader revision')
     args = parser.parse_args()
     if args.output.exists():
         parser.error('output already exists')
@@ -32,7 +33,7 @@ def main():
         parser.error('kernel SHA-256 does not match the build manifest')
     boot = files / 'oneui-boot.img'
     stock = boot.read_bytes()
-    loader = files / 'xnu-handoff-Image'
+    loader = args.loader or files / 'xnu-handoff-Image'
     image = loader.read_bytes()
     if (len(stock) != 40960 * 1024 or not stock.startswith(b'ANDROID!')
             or image[0x38:0x3c] != b'ARMd'

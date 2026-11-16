@@ -25,6 +25,9 @@ _head:
 _start:
 	msr	daifset, #0xf
 	mov	x19, x0			/* DTB */
+#ifdef DREAM2LTE_BRINGUP
+	mov	x22, x9			/* preserved by the alignment wrapper */
+#endif
 	mrs	x20, CurrentEL
 	mrs	x21, sctlr_el1
 	msr	spsel, #1
@@ -42,6 +45,9 @@ _start:
 2:	mov	x0, x19
 	lsr	x1, x20, #2
 	mov	x2, x21
+#ifdef DREAM2LTE_BRINGUP
+	mov	x3, x22
+#endif
 	bl	dl_main			/* returns XNU entry PA, or 0 */
 	cbz	x0, 4f
 	mov	x16, x0
