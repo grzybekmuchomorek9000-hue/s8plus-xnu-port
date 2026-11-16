@@ -114,12 +114,27 @@ memory map, GPU, display-panel or touch support has been established.
   initially showed vnguard, then a later photo showed `BSD root: ufsroot0`
   and repeated rejection of an unknown volume signature by HFS. This
   confirms root device selection and a read from the existing Android
-  USERDATA volume. iOS files had not been written there.
+  USERDATA volume. iOS files had not been written there. Restored the
+  verified One UI BOOT backup in TWRP and requested a normal reboot.
 - An optional diagnostic BOOT image is
   `research/dream2lte-capture/s8plus-xnu-startup-trace.img`.
   It adds `startup_debug=1`; the later photo made this trial unnecessary.
   SHA-256 `19657a958431a2dd4a24f1113a2e336ac33d393daf52f7ded4d090d3a8b04e27`.
   Verified the loader's handoff and parameters in ARM64 emulation.
-- Next host step: build and verify the iOS HFS+ image from the three
-  extracted DMGs in Linux. Before any destructive USERDATA step, establish
-  the partition backup and restore path for the current One UI install.
+## iOS 16.7.16 userland images
+
+- Built the iPhone X 20H392 OS, SystemOS and AppOS into the 16 GiB journaled
+  HFSX image `research/linux-builder/ios16-root-20H392.img` in a local
+  Debian 13 guest. The HFS check passed and the image contains executable
+  ARM64 launchd and SpringBoard, the cryptex shared-cache hard link and the
+  required log directory ownership. The SHA-256 verified after export to
+  Windows is `c2e7f104ca7cf99c756b0df9aba64457e0bd7a77403c4751d0ed5cbdd1af5974`.
+- The BOOT candidate `research/dream2lte-capture/s8plus-ios-userland-boot.img`
+  uses the V3 loader and XNU CI run 43920842378. SHA-256
+  `9264ec8e898c234c305e19c5278183862e5a236eac8764aacfe2e937077e591e`.
+  It selects USERDATA with writes enabled, retains one A53 core, and keeps
+  the unported S8+ touch controller disabled. The candidate is untested on hardware.
+- The full One UI USERDATA backup is separate from the 40 MiB BOOT backup.
+  `tools/dream2lte/backup-userdata.py` reads the unmounted, exact-size SM-G955F
+  partition through TWRP, can resume a partial local file, and requires the
+  final phone and disk SHA-256 to match. Keep backups and iOS images local.

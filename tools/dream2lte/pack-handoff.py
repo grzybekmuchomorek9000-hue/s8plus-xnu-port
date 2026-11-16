@@ -16,8 +16,11 @@ def main():
     parser.add_argument('kernel_artifact', type=Path, help='extracted xnu-kernel-dream2lte')
     parser.add_argument('output', type=Path)
     parser.add_argument('--loader', type=Path, help='use a specific built loader revision')
-    parser.add_argument('--probe-ufs', action='store_true',
-                        help='select the read-only USERDATA partition detection test')
+    root = parser.add_mutually_exclusive_group()
+    root.add_argument('--probe-ufs', action='store_true',
+                      help='select the read-only USERDATA partition detection test')
+    root.add_argument('--ios-userland', action='store_true',
+                      help='boot an iOS HFS+ image already placed in USERDATA')
     parser.add_argument('--trace-startup', action='store_true',
                         help='print verbose XNU startup checkpoints')
     args = parser.parse_args()
@@ -47,9 +50,15 @@ def main():
                'wdt=-1 wdt_test=no_user_checkin a5touchprobe=0 s8touch=0 a5keys=0 '
                'sweetbattery=0 sweetfb_native=1')
     adt_options = ['--board', 'dream2lte']
-    if args.probe_ufs:
+    if args.probe_ufs or args.ios_userland:
         adt_options.append('--probe-ufs')
-        cmdline += ' rd=ufsroot0 ufsroot=USERDATA ufsrw=0 rootrw=0 sweetlog=0'
+        cmdline += ' rd=ufsroot0 ufsroot=USERDATA'
+        if args.probe_ufs:
+            cmdline += ' ufsrw=0 rootrw=0 sweetlog=0'
+        else:
+            cmdline += (' ufsrw=1 rootrw=1 sweetlog=1 launchd_unsecure_cache=1'
+                        ' unentitled_ios_sim_launch=1 ignition_level=1'
+                        ' a5fb_keep_on=1 a5fb_noconsole=1')
     if args.trace_startup:
         cmdline += ' startup_debug=1'
     with tempfile.TemporaryDirectory() as tmp:
