@@ -1,7 +1,7 @@
 # SM-G955F / dream2lte adaptation
 
-Status: XNU execution confirmed on the SM-G955F. The userland has not
-started. Read-only storage access is still unconfirmed.
+Status: XNU execution and read-only access to USERDATA confirmed on the
+SM-G955F. The userland has not started.
 
 The user reports a European Exynos S8+, TWRP, and a One UI 8 port.
 The supplied folder also includes universal8895-Repartitioner-80000.zip.
@@ -111,9 +111,15 @@ memory map, GPU, display-panel or touch support has been established.
   UFS ranges 0x11120000/0x200 and 0x11121100/0x200.
 - A second trial enabled the UFS ADT node and selected USERDATA through
   the existing XNU driver with `ufsrw=0 rootrw=0 sweetlog=0`. The photo
-  again reaches vnguard, with no UFS message. This does not establish a UFS
-  failure: the observed line precedes BSD root device selection.
-- The next BOOT image is `research/dream2lte-capture/s8plus-xnu-startup-trace.img`.
-  It adds `startup_debug=1` to identify the next kernel startup step.
+  initially showed vnguard, then a later photo showed `BSD root: ufsroot0`
+  and repeated rejection of an unknown volume signature by HFS. This
+  confirms root device selection and a read from the existing Android
+  USERDATA volume. iOS files had not been written there.
+- An optional diagnostic BOOT image is
+  `research/dream2lte-capture/s8plus-xnu-startup-trace.img`.
+  It adds `startup_debug=1`; the later photo made this trial unnecessary.
   SHA-256 `19657a958431a2dd4a24f1113a2e336ac33d393daf52f7ded4d090d3a8b04e27`.
   Verified the loader's handoff and parameters in ARM64 emulation.
+- Next host step: build and verify the iOS HFS+ image from the three
+  extracted DMGs in Linux. Before any destructive USERDATA step, establish
+  the partition backup and restore path for the current One UI install.
