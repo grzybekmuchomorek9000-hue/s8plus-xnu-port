@@ -1,7 +1,8 @@
 # SM-G955F / dream2lte adaptation
 
-Status: iOS 16.7.16 booted from USERDATA to the graphical lock screen on
-the SM-G955F. Touch was disabled for this trial.
+Status: iOS 16.7.16 booted from USERDATA to the Home Screen on the
+SM-G955F. The FTS8 touch trial reached the Home Screen and opened Settings
+in response to user input.
 
 The user reports a European Exynos S8+, TWRP, and a One UI 8 port.
 The supplied folder also includes universal8895-Repartitioner-80000.zip.
@@ -163,3 +164,27 @@ memory map, GPU, display-panel or touch support has been established.
 - The captured DT lists `tsp_stm/fts8cd56_dream2.fw` and a 1440×2960
   coordinate range for the controller at 0x49 on the 0x108e0000 HSI2C
   bus. Use these device values when investigating touch.
+
+## FTS8 touch trial
+
+- TWRP confirmed digital ID `36 70` on I2C 5 at 0x49 and input axes
+  0–1439 and 0–2959. The captured DT sets AVDD (LDO35) to 3.3 V and IO
+  (LDO34) to 1.85 V. The order and FIFO protocol were checked against
+  Samsung's `stm/fts_ts.c` in exynos-linux-stable/dreamlte
+  at `baef434858eda94d675e56b9f47a1e4fb6f0b53e`.
+- The opt-in loader powers the two rails and prepares USI09 before setting
+  `s8touch=1`. The XNU worker identifies the chip and sends contacts using
+  the existing iOS HID service. Local samples passed contact, motion,
+  release and input bounds checks. ARM64 emulation checked power sequencing
+  and the failed-readback exit.
+- GitHub Actions run `43974446505` built and packaged the kernel from
+  `aeac4945e666a55a4156c1dc2bcbee878419a9a1`. Local candidate
+  `s8plus-ios-fts8-boot.img` SHA-256
+  `9b8ec10bad50a6817207320819019e92b7fce6144358aa05c08c976c3ec83d94`.
+  In TWRP the complete BOOT partition readback matched SHA-256
+  `d30178f6bc5875cb3ba50e9bc7de6b5a7105dafdf9504b62662b209308284ac6`.
+  The phone was rebooted for a physical touch test. The user sent a photo
+  of the iOS Home Screen after being asked to swipe up from the lock
+  screen, then a photo of the open Settings app after being asked to tap
+  its icon. This verifies navigation by swipe and tap on the SM-G955F.
+  The known lock-screen BOOT remains available locally for rollback.
