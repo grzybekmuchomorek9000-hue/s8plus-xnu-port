@@ -1,7 +1,7 @@
 # SM-G955F / dream2lte adaptation
 
-Status: XNU execution and read-only access to USERDATA confirmed on the
-SM-G955F. The userland has not started.
+Status: XNU and iOS 16.7.16 userspace both ran on the SM-G955F from
+USERDATA. A graphical iOS screen has not been observed.
 
 The user reports a European Exynos S8+, TWRP, and a One UI 8 port.
 The supplied folder also includes universal8895-Repartitioner-80000.zip.
@@ -138,3 +138,20 @@ memory map, GPU, display-panel or touch support has been established.
   `tools/dream2lte/backup-userdata.py` reads the unmounted, exact-size SM-G955F
   partition through TWRP, can resume a partial local file, and requires the
   final phone and disk SHA-256 to match. Keep backups and iOS images local.
+
+## First iOS userland trial
+
+- One UI's intact BOOT hash matched both its local backup and the BOOT member
+  in the available dream2lte ROM installer. The user authorized proceeding
+  without completing the USERDATA backup after repeated USB disconnections.
+- In TWRP, wrote the 16 GiB HFSX image to USERDATA sda28 and verified all 128
+  chunks as well as the SHA-256 of the complete image extent. Wrote the
+  padded iOS BOOT candidate to sda7 and verified the whole 40 MiB partition
+  with SHA-256 `34953193e01b50885437e90193010a381ec5d27bf0580a31baae0f01ab3774e1`.
+  RECOVERY was left intact. Requested a normal reboot after a final BOOT
+  readback.
+- The first post-reboot photo shows iOS userspace running, including
+  `xpcproxy` execution and AppleKeyStore calls from `securityd`,
+  `bluetoothd` and other system processes. This confirms filesystem
+  access and userspace execution. It does not establish that SpringBoard
+  rendered a frame or that touch or GPU acceleration works.
