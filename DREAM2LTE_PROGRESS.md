@@ -1,7 +1,7 @@
 # SM-G955F / dream2lte adaptation
 
-Status: XNU and iOS 16.7.16 userspace both ran on the SM-G955F from
-USERDATA. A graphical iOS screen has not been observed.
+Status: iOS 16.7.16 booted from USERDATA to the graphical lock screen on
+the SM-G955F. Touch was disabled for this trial.
 
 The user reports a European Exynos S8+, TWRP, and a One UI 8 port.
 The supplied folder also includes universal8895-Repartitioner-80000.zip.
@@ -153,5 +153,13 @@ memory map, GPU, display-panel or touch support has been established.
 - The first post-reboot photo shows iOS userspace running, including
   `xpcproxy` execution and AppleKeyStore calls from `securityd`,
   `bluetoothd` and other system processes. This confirms filesystem
-  access and userspace execution. It does not establish that SpringBoard
-  rendered a frame or that touch or GPU acceleration works.
+  access and userspace execution.
+- The user reported the Apple logo after the verbose text. A subsequent
+  photo shows the graphical iOS lock screen with date, time, battery
+  indicator and a camera shortcut. The displayed date was incorrect.
+  Unlock, touch, and GPU acceleration were not verified.
+- If diagnostics are needed in TWRP, read the console ring from the last
+  1025 4 KiB blocks of USERDATA sda28.
+- The captured DT lists `tsp_stm/fts8cd56_dream2.fw` and a 1440×2960
+  coordinate range for the controller at 0x49 on the 0x108e0000 HSI2C
+  bus. Use these device values when investigating touch.
