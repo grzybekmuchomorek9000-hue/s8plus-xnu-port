@@ -191,6 +191,22 @@ static void dump(const char *what, const uint8_t *b, unsigned n, uint32_t st)
 	out("\n");
 }
 
+static void touch_bus_init(void)
+{
+	wr(P1_USI09_PCLK, rd(P1_USI09_PCLK) | GATE_ON);
+	wr(P1_USI09_SCLK, rd(P1_USI09_SCLK) | GATE_ON);
+	wr(P1_USI09_USER_MUX, rd(P1_USI09_USER_MUX) & ~(1u << 4));
+	wr(SYSREG_USI09, (rd(SYSREG_USI09) & ~0xfu) | USI_V1_I2C0_1);
+	wr(GPE3, (rd(GPE3) & ~0xffu) | 0x22);
+	wr(GPE3 + 8, rd(GPE3 + 8) & ~0xffu);
+}
+
+void dream2lte_touch_bus_init(void)
+{
+	delay_ms(200);
+	touch_bus_init();
+}
+
 void touch_probe(void (*kv_fn)(const char *, uint64_t), void (*out_fn)(const char *))
 {
 	uint8_t c, b[11];
@@ -216,12 +232,7 @@ void touch_probe(void (*kv_fn)(const char *, uint64_t), void (*out_fn)(const cha
 	show("dat", GPA1 + 4);
 	out("\n");
 
-	wr(P1_USI09_PCLK, rd(P1_USI09_PCLK) | GATE_ON);
-	wr(P1_USI09_SCLK, rd(P1_USI09_SCLK) | GATE_ON);
-	wr(P1_USI09_USER_MUX, rd(P1_USI09_USER_MUX) & ~(1u << 4));
-	wr(SYSREG_USI09, (rd(SYSREG_USI09) & ~0xfu) | USI_V1_I2C0_1);
-	wr(GPE3, (rd(GPE3) & ~0xffu) | 0x22);
-	wr(GPE3 + 8, rd(GPE3 + 8) & ~0xffu);
+	touch_bus_init();
 	out("clocks/pins set: ");
 	show("pclk", P1_USI09_PCLK);
 	show("user", P1_USI09_USER_MUX);

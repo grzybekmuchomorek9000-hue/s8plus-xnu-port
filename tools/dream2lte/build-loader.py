@@ -44,6 +44,7 @@ def linux_image(elf):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--touch', action='store_true', help='power and configure the S8+ touch bus')
     args = parser.parse_args()
     if args.output.exists():
         parser.error('output already exists')
@@ -63,7 +64,8 @@ def main():
                            cwd=work, check=True)
             return linux_image(elf.read_bytes())
 
-        inner = build('inner', '-DDREAM2LTE_BRINGUP', donor / 'start.S',
+        touch = ['-DDREAM2LTE_TOUCH', donor / 'pmic.c', donor / 'touch_probe.c'] if args.touch else []
+        inner = build('inner', '-DDREAM2LTE_BRINGUP', *touch, donor / 'start.S',
                       donor / 'loader.c', shim / 'fdt.c')
         if len(inner) % 16:
             parser.error('inner Image is not 16-byte aligned')

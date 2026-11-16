@@ -34,6 +34,7 @@
 #define LDO_EN			(3u << 6)
 #define L34_1V85		(LDO_EN | (1850000 - 700000) / 25000)
 #define L35_3V0			(LDO_EN | (3000000 - 1800000) / 25000)
+#define L35_3V3			(LDO_EN | (3300000 - 1800000) / 25000)
 #define RTC_UPDATE		0x02
 #define RTC_RUDR		0x01
 #define RTC_SEC			0x04
@@ -81,6 +82,17 @@ static int speedy(unsigned slave, unsigned reg, int write, uint8_t val)
 		}
 	}
 	return -1;
+}
+
+int dream2lte_touch_power(void)
+{
+	/* SM-G955F DT: AVDD=LDO35 at 3.3 V, then IO=LDO34 at 1.85 V. */
+	if (speedy(SLAVE_PMIC, L35CTRL, 1, L35_3V3) < 0 ||
+	    speedy(SLAVE_PMIC, L35CTRL, 0, 0) != L35_3V3)
+		return 0;
+	delay_us(1000);
+	return speedy(SLAVE_PMIC, L34CTRL, 1, L34_1V85) >= 0 &&
+	       speedy(SLAVE_PMIC, L34CTRL, 0, 0) == L34_1V85;
 }
 
 static void show(const char *k, unsigned slave, unsigned reg)

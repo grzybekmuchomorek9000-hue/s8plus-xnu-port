@@ -92,7 +92,7 @@ index 7ba309b..ba647a8 100644
  
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
  extern void thread_terminate_self(void);
-@@ -615,10 +616,317 @@ a5touch_start_early(vm_offset_t nfc, vm_offset_t alive)
+@@ -615,10 +616,459 @@ a5touch_start_early(vm_offset_t nfc, vm_offset_t alive)
  	}
  }
  
@@ -106,6 +106,7 @@ index 7ba309b..ba647a8 100644
 + * interrupt gpa1-0 active low (boot 26: boot status 0x20, device id
 + * 0xac3761). Event protocol from mainline s6sy761.c; raw 0..4095 axes go
 + * to SweetHIDTouch's 1080x1920 grid.
++ * SM-G955F instead uses ST FTS8CD56 at 0x49 on the same HSI2C block.
 + *
 + * Battery: MAX77865 on hsi2c_32 (USI13 second HSI2C, 0x10970000), fuel
 + * gauge 0x36 and charger 0x69 (Samsung max77865_fuelgauge.c/_charger.c).
@@ -121,9 +122,12 @@ index 7ba309b..ba647a8 100644
 +#define S8_I2C_CLKIN            26000000u
 +#define S8_I2C_SCL_HZ           400000u
 +
-+static vm_offset_t s8ts_i2c, s8ts_alive, s8bat_i2c;
++static vm_offset_t s8ts_i2c, s8bat_i2c;
 +static int s8ts_sleep;
++#if !DREAM2LTE_BRINGUP
++static vm_offset_t s8ts_alive;
 +static int s8ts_native;         /* sweetfb_native: iOS sees the whole panel */
++#endif
 +static bool s8ts_down[S8TS_FINGERS];
 +static uint16_t s8ts_x[S8TS_FINGERS], s8ts_y[S8TS_FINGERS];
 +
@@ -210,6 +214,7 @@ index 7ba309b..ba647a8 100644
 +	return false;
 +}
 +
++#if !DREAM2LTE_BRINGUP
 +static bool
 +s8ts_cmd_read(uint8_t cmd, uint8_t *r, unsigned rlen)
 +{
@@ -258,6 +263,7 @@ index 7ba309b..ba647a8 100644
 +		}
 +	}
 +}
++#endif
 +
 +static void
 +s8ts_wait(unsigned ms)
@@ -268,6 +274,133 @@ index 7ba309b..ba647a8 100644
 +	thread_block(THREAD_CONTINUE_NULL);
 +}
 +
++#if DREAM2LTE_BRINGUP
++/* FTS8 register and event layout from Samsung's dream2lte stm/fts_ts.c. */
++#define S8FTS_ADDR             0x49u
++#define S8FTS_EVENTS           32u
++#define S8FTS_EVENT_SIZE       8u
++
++static bool
++s8fts_command(uint8_t cmd)
++{
++	return s8i2c_xfer(s8ts_i2c, S8FTS_ADDR, &cmd, 1, NULL, 0);
++}
++
++static void
++s8fts_report(const uint8_t *event)
++{
++	unsigned action = event[0] & 0xf;
++	unsigned finger = event[0] >> 4;
++	if (action < 3 || action > 5 || finger >= S8TS_FINGERS) {
++		return;
++	}
++	if (action == 4) {  /* leave */
++		if (s8ts_down[finger] && finger < 5) {
++			sweet_hid_touch((int)finger, 0, s8ts_x[finger], s8ts_y[finger]);
++		}
++		s8ts_down[finger] = false;
++		return;
++	}
++	if (action == 5 && !s8ts_down[finger]) {  /* motion without an enter */
++		return;
++	}
++	unsigned x = event[1] | ((unsigned)(event[2] & 0xf) << 8);
++	unsigned y = (event[2] >> 4) | ((unsigned)event[3] << 4);
++	if (x >= 1440 || y >= 2960) {
++		return;
++	}
++	s8ts_x[finger] = (uint16_t)(x * 1080 / 1440);
++	s8ts_y[finger] = (uint16_t)(y * 1920 / 2960);
++	if (!s8ts_down[finger]) {
++		printf("S8+ FTS8: down id=%u x=%u y=%u\n", finger, x, y);
++	}
++	s8ts_down[finger] = true;
++	if (finger < 5) {
++		sweet_hid_touch((int)finger, 1, s8ts_x[finger], s8ts_y[finger]);
++	}
++}
++
++static bool
++s8fts_start(void)
++{
++	const uint8_t chip_id[] = {0xb6, 0x00, 0x04};
++	const uint8_t reset[] = {0xb6, 0x00, 0x28, 0x80};
++	const uint8_t read_one = 0x85;
++	uint8_t id[7] = {0}, event[S8FTS_EVENT_SIZE];
++	bool identified = s8i2c_xfer(s8ts_i2c, S8FTS_ADDR, chip_id, sizeof(chip_id), id, sizeof(id));
++	if (!identified || id[1] != 0x36 || id[2] != 0x70) {
++		printf("S8+ FTS8: controller probe failed (ack=%u id=%02x%02x)\n",
++		    (unsigned)identified, id[1], id[2]);
++		return false;
++	}
++	printf("S8+ FTS8: controller id=%02x%02x\n", id[1], id[2]);
++	if (!s8i2c_xfer(s8ts_i2c, S8FTS_ADDR, reset, sizeof(reset), NULL, 0)) {
++		return false;
++	}
++	for (unsigned attempt = 0; attempt < 25; attempt++) {
++		s8ts_wait(20);
++		if (s8i2c_xfer(s8ts_i2c, S8FTS_ADDR, &read_one, 1, event, sizeof(event)) &&
++		    event[0] == 0x10) {  /* controller ready */
++			if (!s8fts_command(0xa1)) {  /* flush event FIFO */
++				return false;
++			}
++			s8ts_wait(10);
++			return s8fts_command(0x93) && s8fts_command(0xa2);  /* sense and calibrate */
++		}
++	}
++	printf("S8+ FTS8: no controller-ready event\n");
++	return false;
++}
++
++static void
++s8ts_thread(void *arg, wait_result_t result)
++{
++	const uint8_t fifo_count[] = {0xb6, 0x00, 0x23};
++	const uint8_t read_all = 0x86;
++	uint8_t count[2], events[S8FTS_EVENTS * S8FTS_EVENT_SIZE];
++	unsigned errors = 0;
++	(void)arg;
++	(void)result;
++	if (!s8fts_start()) {
++		printf("S8+ FTS8: initialization stopped\n");
++		thread_terminate_self();
++		return;
++	}
++	printf("S8+ FTS8: tracking contacts\n");
++	for (;;) {
++		s8ts_wait(12);
++		if (s8i2c_xfer(s8ts_i2c, S8FTS_ADDR, fifo_count, sizeof(fifo_count), count, sizeof(count))) {
++			unsigned pending = count[1] / 2;
++			if (!pending) {
++				errors = 0;
++				continue;
++			}
++			if (pending > S8FTS_EVENTS) {
++				pending = S8FTS_EVENTS;
++			}
++			if (s8i2c_xfer(s8ts_i2c, S8FTS_ADDR, &read_all, 1, events, pending * S8FTS_EVENT_SIZE)) {
++				for (unsigned i = 0; i < pending; i++) {
++					s8fts_report(events + i * S8FTS_EVENT_SIZE);
++				}
++				errors = 0;
++				continue;
++			}
++		}
++		if (++errors == 1 || errors == 32) {
++			printf("S8+ FTS8: FIFO transfer failed (%u)\n", errors);
++		}
++		if (errors == 32) {
++			for (unsigned finger = 0; finger < 5; finger++) {
++				if (s8ts_down[finger]) {
++					sweet_hid_touch((int)finger, 0, s8ts_x[finger], s8ts_y[finger]);
++				}
++			}
++			thread_terminate_self();
++			return;
++		}
++	}
++}
++#else
 +static void
 +s8ts_thread(void *arg, wait_result_t result)
 +{
@@ -306,6 +439,7 @@ index 7ba309b..ba647a8 100644
 +		errors = 0;
 +	}
 +}
++#endif
 +
 +static bool
 +s8bat_read16(unsigned addr, uint8_t reg, uint16_t *value)
@@ -362,16 +496,23 @@ index 7ba309b..ba647a8 100644
 +static void
 +dreamlte_touch_start(void)
 +{
-+	uint8_t b[11] = {0};
 +	thread_t thread;
-+	int enabled = 1;
++	int enabled = !DREAM2LTE_BRINGUP;
 +	(void)PE_parse_boot_argn("s8touch", &enabled, sizeof(enabled));
-+	(void)PE_parse_boot_argn("sweetfb_native", &s8ts_native, sizeof(s8ts_native));
 +	if (!enabled) {
 +		printf("S8 TOUCH: disabled\n");
 +		return;
 +	}
 +	s8ts_i2c = ml_io_map(S8TS_HSI2C_PA, 0x1000);
++#if DREAM2LTE_BRINGUP
++	if (!s8ts_i2c) {
++		printf("S8+ FTS8: MMIO mapping failed\n");
++		return;
++	}
++	s8i2c_reset(s8ts_i2c);
++#else
++	uint8_t b[11] = {0};
++	(void)PE_parse_boot_argn("sweetfb_native", &s8ts_native, sizeof(s8ts_native));
 +	s8ts_alive = ml_io_map(S8TS_ALIVE_PA, 0x1000);
 +	if (!s8ts_i2c || !s8ts_alive) {
 +		printf("S8 TOUCH: MMIO mapping failed\n");
@@ -392,6 +533,7 @@ index 7ba309b..ba647a8 100644
 +		printf("S8 TOUCH: enable sequence failed\n");
 +		return;
 +	}
++#endif
 +	if (kernel_thread_start(s8ts_thread, NULL, &thread) == KERN_SUCCESS) {
 +		thread_deallocate(thread);
 +	} else {

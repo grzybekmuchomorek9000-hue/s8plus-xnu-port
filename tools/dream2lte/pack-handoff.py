@@ -21,6 +21,8 @@ def main():
                       help='select the read-only USERDATA partition detection test')
     root.add_argument('--ios-userland', action='store_true',
                       help='boot an iOS HFS+ image already placed in USERDATA')
+    parser.add_argument('--touch', action='store_true',
+                        help='package the S8+ FTS8 touch loader with iOS userland')
     parser.add_argument('--trace-startup', action='store_true',
                         help='print verbose XNU startup checkpoints')
     args = parser.parse_args()
@@ -46,6 +48,9 @@ def main():
             or image[0x38:0x3c] != b'ARMd'
             or b'S8PLUS XNU HANDOFF TEST' not in image):
         parser.error('unexpected One UI BOOT backup or S8+ loader')
+    touch_loader = b'S8+ FTS8 power and bus ready' in image
+    if args.touch != touch_loader or (args.touch and not args.ios_userland):
+        parser.error('--touch requires --ios-userland and a loader built with --touch')
     cmdline = ('debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress '
                'wdt=-1 wdt_test=no_user_checkin a5touchprobe=0 s8touch=0 a5keys=0 '
                'sweetbattery=0 sweetfb_native=1')

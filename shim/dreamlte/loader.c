@@ -263,6 +263,27 @@ static int64_t days_from_civil(int64_t y, unsigned m, unsigned d)
 	return era * 146097 + (int64_t)doe - 719468;
 }
 
+#ifdef DREAM2LTE_TOUCH
+static void enable_dream2lte_touch(volatile struct boot_args *ba)
+{
+	static const char disabled[] = "s8touch=0";
+	for (unsigned at = 0; at + sizeof(disabled) <= BOOT_LINE_LENGTH; at++) {
+		if (!ba->CommandLine[at])
+			return;
+		if (at && ba->CommandLine[at - 1] != ' ')
+			continue;
+		unsigned n = 0;
+		while (disabled[n] && ba->CommandLine[at + n] == disabled[n])
+			n++;
+		if (!disabled[n] && (!ba->CommandLine[at + n] ||
+		    ba->CommandLine[at + n] == ' ')) {
+			ba->CommandLine[at + n - 1] = '1';
+			return;
+		}
+	}
+}
+#endif
+
 /* XNU's platform expert has no clock on the S8 (iOS showed 1969). Pass the
  * PMIC RTC as "s8rtc=" = UTC seconds at system-counter zero; the kernel
  * adds the counter (patch 0124, PEGetUTCTimeOfDay). RTC bytes from 0x04:
@@ -437,9 +458,19 @@ uint64_t dl_main(uintptr_t dtb, uint64_t el, uint64_t sctlr)
 	display_probe(kv, out);
 	mngs_probe(kv, out);
 #else
-	/* The first trial relies only on the confirmed display handoff. */
 	(void)rtc_bootarg;
+#ifdef DREAM2LTE_TOUCH
+	if (dream2lte_touch_power()) {
+		dream2lte_touch_bus_init();
+		enable_dream2lte_touch(ba);
+		clean(ba_pa, ba_pa + PAGE_SIZE);
+		out("S8+ FTS8 power and bus ready\n");
+	} else {
+		out("S8+ FTS8 regulator check failed\n");
+	}
+#else
 	out("S8+ peripheral probes skipped\n");
+#endif
 #endif
 	/* smp_probe(kv, out) proved the PMU power-up (boot 19); it leaves the
 	 * probed cores' PMU power on, which hid the 0 -> 0xF edge XNU needs. */
