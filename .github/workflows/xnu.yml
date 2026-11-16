@@ -43,8 +43,8 @@ env:
 jobs:
   build:
     # The macos-14 runner was retired. Patch 0083 adapts XNU's IORPC to
-    # newer iig output, so use the Xcode 16 series on macos-15.
-    runs-on: macos-15
+    # newer iig output, so use Xcode 16 and keep the donor's Intel host.
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
