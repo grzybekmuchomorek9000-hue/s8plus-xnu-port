@@ -1,8 +1,7 @@
 # SM-G955F / dream2lte adaptation
 
-Status: standalone display probe and handoff loader execution confirmed on
-the SM-G955F. V3 reached the XNU entry address in emulation and awaits a
-device trial.
+Status: XNU execution confirmed on the SM-G955F. The userland has not
+started. Read-only storage access is still unconfirmed.
 
 The user reports a European Exynos S8+, TWRP, and a One UI 8 port.
 The supplied folder also includes universal8895-Repartitioner-80000.zip.
@@ -100,3 +99,21 @@ memory map, GPU, display-panel or touch support has been established.
   address. Emulation stopped at that address before executing XNU.
 - Next device test: flash V3 BOOT only, photograph its final screen, return
   to TWRP, and restore the verified One UI BOOT backup.
+
+## V3 and read-only UFS trials
+
+- V3 ran on the phone. The photo shows the XNU console, AppleCLCD,
+  successful SGI1 on the single A53 core, VM bootstrap completion, and
+  registration of Guarded vnode policy (vnguard). One UI BOOT was
+  restored in TWRP and verified after V3.
+- TWRP reports UFS logical blocks of 4096 bytes and USERDATA at sda28,
+  starting at sector 18863104 (512-byte sysfs units). The board DT confirms
+  UFS ranges 0x11120000/0x200 and 0x11121100/0x200.
+- A second trial enabled the UFS ADT node and selected USERDATA through
+  the existing XNU driver with `ufsrw=0 rootrw=0 sweetlog=0`. The photo
+  again reaches vnguard, with no UFS message. This does not establish a UFS
+  failure: the observed line precedes BSD root device selection.
+- The next BOOT image is `research/dream2lte-capture/s8plus-xnu-startup-trace.img`.
+  It adds `startup_debug=1` to identify the next kernel startup step.
+  SHA-256 `19657a958431a2dd4a24f1113a2e336ac33d393daf52f7ded4d090d3a8b04e27`.
+  Verified the loader's handoff and parameters in ARM64 emulation.

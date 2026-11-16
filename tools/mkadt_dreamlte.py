@@ -69,7 +69,7 @@ def cpu_node(logical):
     ]
 
 
-def build(canvas=(FB_W, FB_H), board='dreamlte'):
+def build(canvas=(FB_W, FB_H), board='dreamlte', probe_ufs=False):
     if board not in ('dreamlte', 'dream2lte'):
         raise ValueError('unsupported board')
     # Confirmed on the captured SM-G955F: 2 GiB high bank and a 1440x2960
@@ -130,7 +130,7 @@ def build(canvas=(FB_W, FB_H), board='dreamlte'):
     ]))
     # bsd/dev/sweet_ufs.c (A5XELTE config, EXYNOS_UFS): UFSHCI standard
     # registers, then the Exynos vendor HCI block (HCI_UTRL_NEXUS_TYPE etc.).
-    if board == 'dreamlte':
+    if board == 'dreamlte' or probe_ufs:
         root.children.append(mkadt.node('dreamlte-ufs', [
             ('reg', mkadt.u64(0x11120000, 0x200, 0x11121100, 0x200)),
         ]))
@@ -143,7 +143,10 @@ if __name__ == '__main__':
     parser.add_argument('--canvas', default=f'{FB_W}x{FB_H}',
                         help='display size presented to iOS, WxH')
     parser.add_argument('--board', choices=('dreamlte', 'dream2lte'), default='dreamlte')
+    parser.add_argument('--probe-ufs', action='store_true',
+                        help='include the verified Exynos UFS MMIO ranges in the S8+ ADT')
     args = parser.parse_args()
-    blob = adt.serialize(build(tuple(int(v) for v in args.canvas.split('x')), board=args.board))
+    blob = adt.serialize(build(tuple(int(v) for v in args.canvas.split('x')),
+                               board=args.board, probe_ufs=args.probe_ufs))
     args.output.write_bytes(blob)
     print(f'{args.output}: {len(blob)} bytes')

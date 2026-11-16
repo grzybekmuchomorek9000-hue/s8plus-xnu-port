@@ -16,6 +16,10 @@ def main():
     parser.add_argument('kernel_artifact', type=Path, help='extracted xnu-kernel-dream2lte')
     parser.add_argument('output', type=Path)
     parser.add_argument('--loader', type=Path, help='use a specific built loader revision')
+    parser.add_argument('--probe-ufs', action='store_true',
+                        help='select the read-only USERDATA partition detection test')
+    parser.add_argument('--trace-startup', action='store_true',
+                        help='print verbose XNU startup checkpoints')
     args = parser.parse_args()
     if args.output.exists():
         parser.error('output already exists')
@@ -42,13 +46,19 @@ def main():
     cmdline = ('debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress '
                'wdt=-1 wdt_test=no_user_checkin a5touchprobe=0 s8touch=0 a5keys=0 '
                'sweetbattery=0 sweetfb_native=1')
+    adt_options = ['--board', 'dream2lte']
+    if args.probe_ufs:
+        adt_options.append('--probe-ufs')
+        cmdline += ' rd=ufsroot0 ufsroot=USERDATA ufsrw=0 rootrw=0 sweetlog=0'
+    if args.trace_startup:
+        cmdline += ' startup_debug=1'
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         adt = work / 'dream2lte.adt'
         payload = work / 'payload.bin'
         candidate = work / 'BOOT.img'
         subprocess.run([sys.executable, str(repo / 'tools/mkadt_dreamlte.py'), str(adt),
-                        '--board', 'dream2lte'], check=True)
+                        *adt_options], check=True)
         subprocess.run([sys.executable, str(repo / 'tools/mkpayload.py'), str(kernel),
                         str(adt), str(payload), '--cmdline', cmdline], check=True)
         subprocess.run([sys.executable, str(repo / 'tools/dreamlte_mkboot.py'), str(boot),
