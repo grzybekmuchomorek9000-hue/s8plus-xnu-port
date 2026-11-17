@@ -48,7 +48,7 @@ jobs:
             -Dgallium-drivers= -Dvulkan-drivers= -Dtools= -Dplatforms= \
             -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false \
             -Dgles1=disabled -Dgles2=disabled -Dllvm=disabled \
-            -Dmesa-clc=auto -Dprecomp-compiler=disabled -Dbuild-tests=false
+            -Dmesa-clc=auto -Dprecomp-compiler=auto -Dbuild-tests=false
           ninja -C mesa-build src/panfrost/s8-mali-copy
           mkdir -p out
           mesa-build/src/panfrost/s8-mali-copy out/g71-copy16.bin > out/g71-copy16.json
