@@ -435,3 +435,9 @@ memory map, GPU, display-panel or touch support has been established.
   publishes MaliMetal/PanVK adapters, but its README distinguishes native
   job completion from unverified UI pixels. These projects provide source
   references, not proof of hardware-accelerated UI on this S8+.
+- CI `44195365874` completed successfully for `763d217` in 13m25s.
+  Flashed `s8plus-ios-mali-runtime-v5-boot.img`, image SHA-256
+  `0d2172045a8ae80a0b0a1b62ee423795dfb853c4f182837015503b2deac4a6f3`.
+  Full BOOT readback matched
+  `6368dab99f107c4739f1e631d72c0e5b845215037c69a6dbbecdb74eec1618c4`.
+  Requested return to TWRP after the logo. Runtime-v5 result is pending.
