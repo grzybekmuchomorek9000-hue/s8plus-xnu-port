@@ -1,6 +1,11 @@
 name: mali-shader
 on:
   workflow_dispatch:
+  push:
+    branches: [s8plus-mali]
+    paths:
+      - .github/workflows/mali-shader.yml
+      - tools/dream2lte/mali-copy-shader.c
 permissions:
   contents: read
 jobs:
