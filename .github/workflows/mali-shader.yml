@@ -1,0 +1,57 @@
+name: mali-shader
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build pkg-config bison flex libdrm-dev libexpat1-dev libzstd-dev
+          python3 -m venv .venv
+          .venv/bin/pip install meson mako pyyaml packaging
+      - name: Fetch pinned Mesa compiler
+        run: |
+          git init -q mesa
+          git -C mesa fetch -q --depth 1 https://github.com/mirror/mesa.git e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae
+          git -C mesa checkout -q FETCH_HEAD
+          cp tools/dream2lte/mali-copy-shader.c mesa/src/panfrost/s8-copy.c
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('mesa/src/meson.build')
+          old = "if with_gallium_panfrost or with_gallium_lima or with_panfrost_vk or with_tools.contains('panfrost')"
+          text = source.read_text()
+          assert text.count(old) == 1
+          source.write_text(text.replace(old, 'if true # S8 offline compiler only'))
+          parent = Path('mesa/src/panfrost/meson.build')
+          with parent.open('a') as output:
+              output.write('''
+          executable('s8-mali-copy', 's8-copy.c',
+            include_directories: [inc_include, inc_src, inc_panfrost],
+            dependencies: [idep_nir, idep_mesautil, libpanfrost_model_dep],
+            link_with: [libpanfrost_compiler])
+          ''')
+          PY
+      - name: Compile G71 shader
+        run: |
+          .venv/bin/meson setup mesa-build mesa \
+            -Dgallium-drivers= -Dvulkan-drivers= -Dtools= -Dplatforms= \
+            -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false \
+            -Dgles1=disabled -Dgles2=disabled -Dllvm=disabled \
+            -Dmesa-clc=auto -Dprecomp-compiler=disabled -Dbuild-tests=false
+          ninja -C mesa-build src/panfrost/s8-mali-copy
+          mkdir -p out
+          mesa-build/src/panfrost/s8-mali-copy out/g71-copy16.bin > out/g71-copy16.json
+          printf '%s\n' e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae > out/mesa-revision.txt
+          (cd out && sha256sum g71-copy16.bin > SHA256SUMS)
+          cat out/g71-copy16.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mali-g71-copy-shader
+          path: out/
+          if-no-files-found: error
