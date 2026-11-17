@@ -397,3 +397,10 @@ memory map, GPU, display-panel or touch support has been established.
   `f69885686735ce54ee3b49bb9e6537c22d6ce42ee2765281ef254d71508ca59b`.
   It has not been submitted on the phone. This is preparation for shader
   execution and future framebuffer copies, not UI acceleration.
+- CI `44190588307` completed successfully for `297f26a`. Flashed
+  `s8plus-ios-mali-runtime-v4-boot.img`, image SHA-256
+  `6374238d9884072bfa22e396ac87ed2f2dc7c83ffd930831efe35f5b5a1aea3b`.
+  Full BOOT readback matched
+  `9037fdfd8386faaaaf7f0d011603788a31ed55ff4a36607fadbf3e46c2624f47`.
+  Requested reboot and return to TWRP after the Apple logo. Runtime-v4
+  result is pending. The compiled compute-copy shader is not in this image.
