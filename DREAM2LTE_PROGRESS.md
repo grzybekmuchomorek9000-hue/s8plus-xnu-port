@@ -322,3 +322,20 @@ memory map, GPU, display-panel or touch support has been established.
   Full BOOT readback SHA-256 is
   `aea587381f9ce2b9d18a41174b471f00ad4a9ae2414c453bbe99a9c7a73e26ef`.
   Requested return to TWRP after boot. Its result is pending.
+- Recovered clear-v3 log. Baseline returned DATA_INVALID_FAULT with
+  descriptor fault pointer `0x1200` (the framebuffer descriptor). The next
+  variant, which removes framebuffer word 12 bit 29 (legacy empty tile
+  write), completed with exception 1 and green first pixel `0xff00ff00`.
+  Boot argument space truncated the remaining variant results.
+- Removed that flag and shortened diagnostics. Flashed clear-v4 with the
+  runtime-disabled path, full BOOT readback
+  `66c65bc5746cfd0871c884302226a7e0ddd5cc863f88d09bcc64876325a4973e`.
+  Recovered `ios-mali-clear-v4-result.txt`: stage 4, done IRQ 1, exception
+  1, output `0xff00ff00`, fault pointer 0. Stage 4 requires all 256 pixels
+  to match and the unused tail of the mapped output page to retain its poison.
+  This verifies hardware offscreen rendering in the loader on this G71.
+  It does not yet verify rendering inside XNU or acceleration of the UI.
+- Applied the proven framebuffer flag fix to the XNU runtime source.
+  CI `44181652355` is building the earlier diagnostic revision `d560570`.
+  That revision still has the former clear descriptor, but the AS0 UPDATE
+  diagnostics run before submitting a fragment job and remain useful.

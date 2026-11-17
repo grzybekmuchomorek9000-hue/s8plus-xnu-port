@@ -83,7 +83,7 @@ static void prepare(bool fragment, uint32_t color) {
 		fb[8] = 15 | (15u << 16);
 		fb[10] = 15 | (15u << 16);
 		fb[11] = (2u << 6) | (8u << 9) | (1u << 24);
-		fb[12] = (1u << 16) | (1u << 29); /* D24, empty tile write */
+		fb[12] = 1u << 16; /* D24. Legacy empty-tile flag faults on this G71. */
 		/* Null tiler pointer is the clear-only (no geometry) path. */
 		volatile uint32_t *rt = job + 0x280 / 4;
 		rt[0] = 1u << 26; /* internal RGBA8 */

@@ -501,10 +501,12 @@ uint64_t dl_main(uintptr_t dtb, uint64_t el, uint64_t sctlr)
 	kv("gpu-id", mali.gpu_id);
 	kv("restored", mali.final_status);
 	out("\n");
+#ifndef DREAM2LTE_MALI_CLEAR
 	append_bootarg_hex(ba, " s8g3dbefore=0x", mali.initial_status);
 	append_bootarg_hex(ba, " s8g3dtry=0x", mali.powered_status);
 	append_bootarg_hex(ba, " s8maliid=0x", mali.gpu_id);
 	append_bootarg_hex(ba, " s8g3dafter=0x", mali.final_status);
+#endif
 #ifdef DREAM2LTE_MALI_JOB
 	out("S8+ MALI WRITE_VALUE job\n");
 #ifdef DREAM2LTE_MALI_CLEAR
@@ -525,26 +527,6 @@ uint64_t dl_main(uintptr_t dtb, uint64_t el, uint64_t sctlr)
 	append_bootarg_hex(ba, " s8maliout=0x", job.value);
 #ifdef DREAM2LTE_MALI_CLEAR
 	append_bootarg_hex(ba, " s8malifault=0x", job.fault_low);
-	/* Isolate the legacy empty-tile flag and RT dithering setting.
-	 * Each call stops the job and restores MMU/power state before the next. */
-	if (job.stage >= 3) {
-		job = dream2lte_mali_job_probe();
-		append_bootarg_hex(ba, " s8clear1=0x", job.exception);
-		append_bootarg_hex(ba, " s8pixel1=0x", job.value);
-		append_bootarg_hex(ba, " s8pass1=0x", job.stage);
-	}
-	if (job.stage >= 3) {
-		job = dream2lte_mali_job_probe();
-		append_bootarg_hex(ba, " s8clear2=0x", job.exception);
-		append_bootarg_hex(ba, " s8pixel2=0x", job.value);
-		append_bootarg_hex(ba, " s8pass2=0x", job.stage);
-	}
-	if (job.stage >= 3) {
-		job = dream2lte_mali_job_probe();
-		append_bootarg_hex(ba, " s8clear3=0x", job.exception);
-		append_bootarg_hex(ba, " s8pixel3=0x", job.value);
-		append_bootarg_hex(ba, " s8pass3=0x", job.stage);
-	}
 #endif
 #endif
 	clean(ba_pa, ba_pa + PAGE_SIZE);

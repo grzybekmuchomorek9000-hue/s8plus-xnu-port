@@ -21,7 +21,6 @@
 #define OUTPUT_OFFSET       0x800u
 #define JOB_TYPE            9u
 #define EXPECTED_OUTPUT     0xff00ff00u
-static unsigned clear_trial;
 #else
 #define OUTPUT_OFFSET       0x100u
 #define JOB_TYPE            2u
@@ -74,11 +73,10 @@ static void prepare_job(void)
 	fb[4] = 0x1400;
 	fb[8] = fb[10] = 15 | (15u << 16);
 	fb[11] = (2u << 6) | (8u << 9) | (1u << 24);
-	fb[12] = (1u << 16) | ((clear_trial & 1) ? 0 : (1u << 29));
+	fb[12] = 1u << 16; /* G71 rejects the legacy empty-tile write flag. */
 	volatile uint32_t *rt = job + 0x280 / 4;
 	rt[0] = 1u << 26;
 	rt[1] = 1u | (19u << 3) | (2u << 10) | (0x688u << 16) | (1u << 31);
-	if (clear_trial & 2) rt[1] |= 1u << 15; /* Match Mesa's dithering setting. */
 	rt[8] = DESCRIPTOR_VA + OUTPUT_OFFSET;
 	rt[10] = 64;
 	for (unsigned i = 12; i < 16; i++) rt[i] = EXPECTED_OUTPUT;
@@ -199,9 +197,6 @@ struct dream2lte_mali_job_result dream2lte_mali_job_probe(void)
 #endif
 	if (result.irq == (1u << slot) && result.exception == 1 && result.value == EXPECTED_OUTPUT && !errors)
 		result.stage = 4;
-#ifdef DREAM2LTE_MALI_CLEAR
-	clear_trial++;
-#endif
 	for (unsigned i = 0; i < 5; i++)
 		gpu_write(js + job_saved[i], job_values[i]);
 
