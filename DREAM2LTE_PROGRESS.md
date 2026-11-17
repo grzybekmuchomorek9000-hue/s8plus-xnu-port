@@ -384,3 +384,16 @@ memory map, GPU, display-panel or touch support has been established.
   Error IRQs remain failures. Runtime timing now uses mach_absolute_time.
   Eleven model scenarios pass, including missing done IRQ and error IRQ.
   Local XNU object compilation passes. Hardware validation is pending.
+- Runtime-v4 kernel CI `44190588307` builds commit `297f26a` and is in
+  progress. It includes the explicit-width write, descriptor polling and
+  kernel-clock changes. The phone remains in TWRP with runtime-v3 BOOT.
+- Added an independent offline Mesa compiler fixture for a one-invocation
+  compute shader that copies 16 bytes from GPU VA 0x2000 to 0x2200.
+  Build configuration selects the actual NIR implementation despite using
+  no Gallium/Vulkan driver. CI `44192809775` succeeded with the pinned Mesa
+  revision `e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae`.
+  Artifact `mali-g71-copy-shader` contains a 160-byte G71 program, 64 work
+  registers, zero preload/TLS/WLS. Program SHA-256
+  `f69885686735ce54ee3b49bb9e6537c22d6ce42ee2765281ef254d71508ca59b`.
+  It has not been submitted on the phone. This is preparation for shader
+  execution and future framebuffer copies, not UI acceleration.
