@@ -416,3 +416,22 @@ memory map, GPU, display-panel or touch support has been established.
   reproduces the previous submission blocking and passes with the drain.
   Twelve model cases and the local XNU object compile pass. The actual
   reason for the hardware guard remains to be verified by the next log.
+- Further integration research (continued 2026-11-18) found existing
+  CoreAnimation/EAGL Mesa bridge source in SavoryBanana/ios-sailfish at
+  `4e92aad8e25331272410697b16a3441cf6ad5c82`, `tools/sweetgl/eagl.c`.
+  It replaces the private EAGL context methods and GLI dispatch table that
+  QuartzCore uses, and imports IOSurface memory into Gallium resources.
+  Its screen factory and DRM emulation target freedreno/MSM and require
+  replacement with Panfrost support for this phone.
+- oosexgang/hakios-mt6768 at
+  `ad65e1f4b3ba479e9d7ada98f17398b83cc6f285` publishes a Panfrost-compatible
+  IOKit user client (`kernel/iokit/Kernel/RedwoodMali.cpp`) and Mali backend.
+  The backend's MediaTek power and AArch64 MMU setup cannot be copied onto
+  G71/Exynos; our verified legacy Mali MMU remains the relevant hardware
+  path. Its MiniIOSurface uses a different pixel-memory layout from our
+  SweetSurface. The README says its Mesa/Metal userspace is not in that
+  repository. Local read-only source copies are under mali-ios-reference.
+- squeeeezy/HelioDarwin at `e04035ebe905a7d41926ee4582a601cb114f8bc4`
+  publishes MaliMetal/PanVK adapters, but its README distinguishes native
+  job completion from unverified UI pixels. These projects provide source
+  references, not proof of hardware-accelerated UI on this S8+.
