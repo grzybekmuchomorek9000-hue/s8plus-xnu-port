@@ -32,9 +32,11 @@ static bool wait(unsigned off, uint32_t mask, uint32_t value) {
 	uint64_t start = ticks();
 	do {
 		if ((rd(off) & mask) == value) return true;
-		IODelay(10);
+		/* Use the architectural counter directly. The first XNU IODelay
+		 * trial timed out although readback immediately showed AS idle. */
+		__asm__ volatile("yield" ::: "memory");
 	} while (ticks() - start < 2600000); /* 100 ms at 26 MHz */
-	return false;
+	return (rd(off) & mask) == value; /* Final sample at the deadline. */
 }
 static void dump(unsigned stage) {
 	IOLog("S8 MALI: regs stage=%u id=%x gpu_status=%x gpu_raw=%x gpu_fault=%x\n",
@@ -150,10 +152,12 @@ static bool run(bool fragment, uint32_t color) {
 			irq = rd(0x1000) & irqMask;
 			fault = rd(0x2000) & 0x10001;
 			if (irq || fault) break;
-			IODelay(10);
+			__asm__ volatile("yield" ::: "memory");
 		} while (ticks() - start < 2600000);
 		elapsed = ticks() - start;
 	}
+	irq = rd(0x1000) & irqMask;
+	fault = rd(0x2000) & 0x10001;
 	if (rd(js + 0x60)) wr(js + 0x60, 0);
 	if (rd(js + 0x60)) { stopped = false; goto cleanup; }
 	if (rd(0x1010) & irqMask) {

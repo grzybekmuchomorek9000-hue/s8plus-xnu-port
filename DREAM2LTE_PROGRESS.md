@@ -353,3 +353,13 @@ memory map, GPU, display-panel or touch support has been established.
   `f8aa02d849537e4fbb948b93fc7a0ae1e21611754dc18528512599553f42b1f8`.
   The user was asked to return to TWRP after the Apple logo. GPU runtime
   diagnostic readback is pending. The local analysis VM was powered off.
+- Recovered `ios-mali-runtime-diag-v2-result.txt`. At the stage-2 timeout,
+  GPU ID remained correct, GPU fault and MMU fault were zero, TTBR readback
+  matched `0x883512007`, and AS0 status was already zero in the immediate
+  diagnostic readback. L2/shader ready were both 1. This suggests a polling
+  timing issue but does not establish its cause or successful submission.
+- Replaced IODelay in bounded GPU polling with the same architectural
+  counter and `yield` approach as the working loader. Added a final status
+  sample at the deadline and refreshed IRQ/fault status after polling.
+  The next kernel also contains the hardware-proven framebuffer flag fix.
+  Eight simulated scenarios and the local XNU object compile pass.

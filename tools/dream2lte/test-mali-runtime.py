@@ -26,7 +26,6 @@ static void bzero(void *p, unsigned long n) {
     volatile unsigned char *v = (volatile unsigned char *)p;
     while (n--) *v++ = 0;
 }
-static void IODelay(unsigned) {}
 static void IOLog(const char *, ...) {}
 static bool PE_parse_boot_argn(const char *, void *v, unsigned) {
     *(int *)v = 1; return true;
