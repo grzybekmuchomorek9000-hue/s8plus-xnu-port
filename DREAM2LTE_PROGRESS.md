@@ -339,3 +339,17 @@ memory map, GPU, display-panel or touch support has been established.
   CI `44181652355` is building the earlier diagnostic revision `d560570`.
   That revision still has the former clear descriptor, but the AS0 UPDATE
   diagnostics run before submitting a fragment job and remain useful.
+- Read-only inspection of the original 20H392 dyld cache found the QuartzCore
+  OpenGL renderer and `CA_ENABLE_OGL`. ARM64 disassembly at unslid
+  `0x1883da844` shows the setting defaults to enabled when absent. Merely
+  setting it to 1 is therefore not a GPU integration. QuartzCore and
+  OpenGLES still look for IOAcceleratorES/AGXAccelerator services. The local
+  inspection output and code bytes stay in ignored research directories.
+  No graphics framework or iOS filesystem was modified in this analysis.
+- CI `44181652355` completed successfully for `d560570`. Packaged and
+  flashed `s8plus-ios-mali-runtime-diag-v2-boot.img`, image SHA-256
+  `50563586ef80d560c878dbb1e668e640c08a1a370601f8caee48c34509f1d7e2`.
+  Full BOOT readback matched
+  `f8aa02d849537e4fbb948b93fc7a0ae1e21611754dc18528512599553f42b1f8`.
+  The user was asked to return to TWRP after the Apple logo. GPU runtime
+  diagnostic readback is pending. The local analysis VM was powered off.
