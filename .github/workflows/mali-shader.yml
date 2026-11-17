@@ -44,6 +44,7 @@ jobs:
           PY
       - name: Compile G71 shader
         run: |
+          export PATH="$PWD/.venv/bin:$PATH"
           .venv/bin/meson setup mesa-build mesa \
             -Dgallium-drivers= -Dvulkan-drivers= -Dtools= -Dplatforms= \
             -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false \
