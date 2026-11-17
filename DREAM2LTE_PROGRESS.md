@@ -404,3 +404,15 @@ memory map, GPU, display-panel or touch support has been established.
   `9037fdfd8386faaaaf7f0d011603788a31ed55ff4a36607fadbf3e46c2624f47`.
   Requested reboot and return to TWRP after the Apple logo. Runtime-v4
   result is pending. The compiled compute-copy shader is not in this image.
+- Recovered `ios-mali-runtime-v4-result.txt`. WRITE_VALUE IMMEDIATE32
+  passed under XNU: stage 4, descriptor completion 1, first word 0,
+  zero mismatches across target/tail/canary and successful cleanup.
+  Kernel-clock measurement reports 19 microseconds. Raw IRQ was zero at
+  the recorded sample. The subsequent fragment clear was skipped by the
+  busy/incompatible guard. Thus a fully validated runtime GPU memory job
+  works; runtime fragment rendering and UI acceleration are still pending.
+- Added JOB raw/active/NEXT readback on guarded exits and a final drain of
+  this job slot's late interrupt after cleanup. A late-IRQ model scenario
+  reproduces the previous submission blocking and passes with the drain.
+  Twelve model cases and the local XNU object compile pass. The actual
+  reason for the hardware guard remains to be verified by the next log.

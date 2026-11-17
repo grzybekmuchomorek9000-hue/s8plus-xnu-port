@@ -36,6 +36,8 @@ static bool wait(unsigned off, uint32_t mask, uint32_t value) {
 	return (rd(off) & mask) == value; /* Final sample at the deadline. */
 }
 static void dump(unsigned stage) {
+	IOLog("S8 MALI: job raw=%x active=%x next0=%x next1=%x\n",
+	    rd(0x1000), rd(0x1010), rd(0x1860), rd(0x18e0));
 	IOLog("S8 MALI: regs stage=%u id=%x gpu_status=%x gpu_raw=%x gpu_fault=%x\n",
 	    stage, rd(0), rd(0x34), rd(0x20), rd(0x3c));
 	IOLog("S8 MALI: MMU ttbr=%x:%x attr=%x:%x config=%x:%x status=%x fault=%x addr=%x:%x raw=%x\n",
@@ -105,6 +107,7 @@ static bool run(bool fragment, uint32_t color) {
 	    rd(as) || rd(as + 4) || rd(as + 0x30) > 1 || rd(as + 0x34) ||
 	    (rd(as + 0x28) & 1) || rd(js + 0x60)) {
 		IOLog("S8 MALI: runtime skipped busy/incompatible kind=%u\n", fragment);
+		dump(0);
 		return false;
 	}
 	const unsigned asOff[6] = {0, 4, 8, 12, 0x30, 0x34};
@@ -195,6 +198,15 @@ cleanup:
 		if (stopped && addL2) {
 			wr(0x1e0, addL2);
 			stopped = wait(0x160, addL2, 0);
+		}
+		if (stopped) {
+			/* Descriptor completion may precede the raw job interrupt.
+			 * Drain only our slot after cleanup, before the next submission. */
+			uint32_t late = rd(0x1000) & irqMask;
+			irq |= late;
+			if (late) wr(0x1004, late);
+			stopped = wait(0x1000, irqMask, 0);
+			if (irq & (1u << (slot + 16))) { ok = false; stage = 3; }
 		}
 	}
 	IOLog("S8 MALI: runtime %s stage=%u irq=%x mmu=%x status=%x first=%x bad=%u us=%llu cleanup=%u\n",
