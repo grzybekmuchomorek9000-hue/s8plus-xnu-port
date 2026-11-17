@@ -363,3 +363,12 @@ memory map, GPU, display-panel or touch support has been established.
   sample at the deadline and refreshed IRQ/fault status after polling.
   The next kernel also contains the hardware-proven framebuffer flag fix.
   Eight simulated scenarios and the local XNU object compile pass.
+- Added a ninth simulated scenario that completes AS0 UPDATE at the
+  polling deadline. It passes with the final register sample.
+- CI `44186349435` completed successfully in 16m42s for `ece05c2`.
+  Flashed `s8plus-ios-mali-runtime-v3-boot.img`, image SHA-256
+  `6b798679c76f39f777431bb489a706a9760acaa68f87e54a622f36427d5f7cbb`.
+  Full BOOT readback matched
+  `bd7ee181400803f636dc1d5743d4e54a6283076fbbfb2364f65cb76ce46491a7`.
+  Requested reboot and physical return to TWRP after the Apple logo.
+  Runtime-v3 GPU job/rendering result is pending.

@@ -76,15 +76,18 @@ def check(elf, scenario):
     jobs = []
     clock = 0
     complete = False
+    as_ready_after = 0
 
     def read32(addr): return struct.unpack('<I', uc.mem_read(addr, 4))[0]
     def write32(addr, v): uc.mem_write(addr, struct.pack('<I', v))
 
     def io(_uc, access, address, size, value, _):
         from unicorn import UC_MEM_READ
-        nonlocal complete
+        nonlocal complete, as_ready_after
         off = address - gpu
         if access == UC_MEM_READ:
+            if off == 0x2428 and scenario == 'deadline-completion':
+                values[off] = int(clock < as_ready_after)
             write32(address, values.get(off, 0))
             return
         values[off] = value
@@ -94,7 +97,9 @@ def check(elf, scenario):
         if off == 0x1e0: values[0x160] = 0
         if off == 0x1004: values[0x1000] = values.get(0x1000, 0) & ~value
         if off == 0x2004: values[0x2000] = values.get(0x2000, 0) & ~value
-        if off == 0x2418: values[0x2428] = 1 if scenario == 'mmu-timeout' else 0
+        if off == 0x2418:
+            values[0x2428] = 1 if scenario == 'mmu-timeout' else 0
+            if scenario == 'deadline-completion': as_ready_after = clock + 2600000
         if off in (0x1860, 0x18e0) and value == 1:
             slot = (off - 0x1860) // 0x80
             desc = cpu + 4 * 4096
@@ -145,8 +150,8 @@ def check(elf, scenario):
     uc.emu_start(entry, 0x2ff000, count=2000000)
     assert uc.reg_read(UC_ARM64_REG_PC) == 0x2ff000, (scenario, 'did not terminate')
     result = uc.reg_read(UC_ARM64_REG_X0)
-    assert bool(result) == (scenario == 'success'), (scenario, result)
-    if scenario == 'success': assert jobs == [2, 9, 9, 9] and complete
+    assert bool(result) == (scenario in ('success', 'deadline-completion')), (scenario, result)
+    if scenario in ('success', 'deadline-completion'): assert jobs == [2, 9, 9, 9] and complete
     if scenario in ('busy', 'wrong-id', 'power-timeout', 'mmu-timeout'): assert not jobs
     if scenario != 'mmu-timeout': assert values.get(0x2400, 0) == 0
     if scenario not in ('busy', 'wrong-id', 'power-timeout', 'mmu-timeout'):
@@ -177,7 +182,7 @@ def main():
                         '-Werror', '-Wall', '-Wextra', '-I', str(work), '-Wl,-e,entry',
                         '-Wl,-T,' + str(work/'check.ld'), str(work/'check.cpp'), '-o', str(elf)], check=True)
         data = elf.read_bytes()
-        for scenario in ('success', 'busy', 'wrong-id', 'power-timeout', 'mmu-timeout',
+        for scenario in ('success', 'deadline-completion', 'busy', 'wrong-id', 'power-timeout', 'mmu-timeout',
                          'job-timeout', 'mmu-fault', 'overrun'):
             check(data, scenario)
 
