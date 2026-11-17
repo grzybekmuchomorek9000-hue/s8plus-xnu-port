@@ -312,3 +312,13 @@ memory map, GPU, display-panel or touch support has been established.
   empty-tile and RT dithering flags and descriptor fault-pointer logging.
   Candidate SHA-256
   `ecab79ad4eb31aa4d71d220bdf59417ebe4a42b10204fdf4b28e4daf25c4bce2`.
+- Recovered `ios-mali-runtime-v1-result.txt`. XNU allocated its DMA buffer
+  at `0x883514000`, but the address-space UPDATE timed out at stage 2,
+  before job submission. The driver retained the mapping/allocation and
+  disabled further jobs (`cleanup=0`). iOS proceeded to mount root.
+  This does not verify a GPU job under XNU. Added readback diagnostics for
+  GPU status/fault, AS0 TTBR/config/status/fault address and core power.
+- Flashed the prepared loader clear v3 plus the runtime-v1 kernel.
+  Full BOOT readback SHA-256 is
+  `aea587381f9ce2b9d18a41174b471f00ad4a9ae2414c453bbe99a9c7a73e26ef`.
+  Requested return to TWRP after boot. Its result is pending.

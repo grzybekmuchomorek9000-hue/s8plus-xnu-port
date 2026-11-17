@@ -36,6 +36,15 @@ static bool wait(unsigned off, uint32_t mask, uint32_t value) {
 	} while (ticks() - start < 2600000); /* 100 ms at 26 MHz */
 	return false;
 }
+static void dump(unsigned stage) {
+	IOLog("S8 MALI: regs stage=%u id=%x gpu_status=%x gpu_raw=%x gpu_fault=%x\n",
+	    stage, rd(0), rd(0x34), rd(0x20), rd(0x3c));
+	IOLog("S8 MALI: MMU ttbr=%x:%x attr=%x:%x config=%x:%x status=%x fault=%x addr=%x:%x raw=%x\n",
+	    rd(0x2404), rd(0x2400), rd(0x240c), rd(0x2408), rd(0x2434), rd(0x2430),
+	    rd(0x2428), rd(0x241c), rd(0x2424), rd(0x2420), rd(0x2000));
+	IOLog("S8 MALI: power l2=%x shader=%x transition=%x:%x\n",
+	    rd(0x160), rd(0x140), rd(0x220), rd(0x200));
+}
 static void clean() {
 	for (uintptr_t a = bytes; a < bytes + SIZE; a += 64)
 		__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
@@ -127,7 +136,7 @@ static bool run(bool fragment, uint32_t color) {
 	wr(as + 0x34, 0);
 	wr(as + 0x18, 1);
 	mapped = true;
-	if (!wait(as + 0x28, 1, 0)) { stopped = false; goto cleanup; }
+	if (!wait(as + 0x28, 1, 0)) { dump(stage); stopped = false; goto cleanup; }
 	stage = 3;
 	wr(js + 0x40, 0x1000);
 	wr(js + 0x44, 0);
@@ -160,6 +169,7 @@ static bool run(bool fragment, uint32_t color) {
 	}
 	ok = irq == (1u << slot) && !fault && status == 1 && !errors;
 	if (ok) stage = 4;
+	if (!ok) dump(stage);
 cleanup:
 	/* If termination cannot be confirmed, retain all DMA memory/mappings
 	 * for the life of this boot and never submit another job. No UAF. */
