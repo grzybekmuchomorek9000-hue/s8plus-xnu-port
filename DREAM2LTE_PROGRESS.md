@@ -252,5 +252,11 @@ memory map, GPU, display-panel or touch support has been established.
   `9b1559b46427c9f1cad3ff766b40dc9edb83964b62976aef53554b613c2c78dd`.
   Verified the flashed BOOT with SHA-256
   `d40085bd9d573accf0c3d8498a4dfd622d8c0979964dfa7313ec391833fc3156`.
-  The physical job result is pending. The UI still uses the existing
-  software framebuffer path.
+  The actual SM-G955F reported stage `4`, job-done IRQ `0x1` and
+  descriptor completion `0x1`. The GPU changed the output word from
+  `0xdeadbeef` to `0x00000000`. XNU mounted iOSRoot afterward and the
+  log includes FTS8 HID input. This confirms a submitted job and real GPU
+  memory access. The UI still uses the software framebuffer path.
+- Restored and verified the one-core 768 MiB FTS8 BOOT
+  (`c83e77c655e6c675fec11bdbf4b7c7752d62163b791aeefa5c55911d230be321`)
+  and requested a normal iOS reboot after capturing the logs.
