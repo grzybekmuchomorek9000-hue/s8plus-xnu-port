@@ -279,3 +279,36 @@ memory map, GPU, display-panel or touch support has been established.
   job timeout, MMU fault and buffer overrun. These check driver control
   flow and containment; the model does not validate real GPU descriptors.
 - Kernel compilation and actual hardware rendering remain unverified.
+- Kernel CI run `44128015721` uses commit `0cf8621` and is queued for
+  `macos-15-intel`. A local object compile against the captured XNU headers
+  passed; that local check stubs Apple's allocator type-analysis builtins
+  and is not a substitute for the genuine Xcode build.
+- While waiting for CI, prepared a loader-only fragment-clear test against
+  the verified FTS8 kernel, preserving its iPhone product ADT and 768 MiB
+  memory window. It renders a 16x16 green target and checks all pixels plus
+  the unused remainder of the private command page. This is separate from
+  the XNU runtime test and does not accelerate the UI.
+- Wrote `s8plus-ios-mali-clear-v2-boot.img`, SHA-256
+  `598760c3ed17ddadad54bd68f4fb90ddbc2ad8023db1b4f9158c239d990edc02`.
+  Full padded BOOT readback matched
+  `03c474792002b6d27bc539f28fda5049db447d65bebf9d0e62e1049bbe5e9743`.
+  Reboot requested; hardware result is pending return to TWRP.
+- Recovered `ios-mali-clear-20261117-result.txt` from TWRP. The loader
+  fragment job reached stage 3, error IRQ `0x10000`, descriptor exception
+  `0x20258` (DATA_INVALID_FAULT) and unchanged output `0xdeadbeef`.
+  The attempted clear did not render. iOS subsequently mounted root and
+  logged framebuffer swaps and FTS8 input.
+- CI `44128015721` completed successfully. Downloaded the dedicated
+  dream2lte kernel and verified manifest SHA-256
+  `ad816f0e6830ab2298256fc03ec95b0d3257c3db3deb18414c75065d15b725b0`.
+- Wrote the XNU runtime trial using the original touch loader, without the
+  preboot GPU job. Candidate `s8plus-ios-mali-runtime-v1-boot.img` SHA-256
+  `1974b47772017946a22f0aa5622a111c71e2359b02ecb251af4117138f8663ac`.
+  Full BOOT readback matched
+  `41929c40acc5ed5abb5bfa972b58d9cfb87f8b068f3c6b692cc980e2082b9102`.
+  Requested reboot and a physical return to TWRP after the logo. The
+  runtime test result is pending. CoreAnimation continues to use the CPU.
+- Prepared an unflashed loader clear v3 with four variants of legacy
+  empty-tile and RT dithering flags and descriptor fault-pointer logging.
+  Candidate SHA-256
+  `ecab79ad4eb31aa4d71d220bdf59417ebe4a42b10204fdf4b28e4daf25c4bce2`.

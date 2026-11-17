@@ -17,7 +17,16 @@
 /* Top of the device's verified high RAM bank, above XNU's RAM window. */
 #define SCRATCH_PA          0x8fffe0000UL
 #define DESCRIPTOR_VA       0x1000u
+#ifdef DREAM2LTE_MALI_CLEAR
+#define OUTPUT_OFFSET       0x800u
+#define JOB_TYPE            9u
+#define EXPECTED_OUTPUT     0xff00ff00u
+static unsigned clear_trial;
+#else
 #define OUTPUT_OFFSET       0x100u
+#define JOB_TYPE            2u
+#define EXPECTED_OUTPUT     0u
+#endif
 #define OUTPUT_INITIAL      0xdeadbeefu
 
 static uint32_t gpu_read(unsigned offset)
@@ -58,10 +67,28 @@ static void prepare_job(void)
 	/* Legacy Mali L3 uses type 1, outer shareable, with read/write permissions. */
 	tables[3 * PAGE / 8 + 1] = (SCRATCH_PA + 4 * PAGE) | 0x2c1u;
 	volatile uint32_t *job = (volatile uint32_t *)(SCRATCH_PA + 4 * PAGE);
-	job[4] = (1u << 16) | (2u << 1) | 1u; /* index 1, WRITE_VALUE, 64-bit descriptor */
+	job[4] = (1u << 16) | (JOB_TYPE << 1) | 1u;
+#ifdef DREAM2LTE_MALI_CLEAR
+	job[10] = 0x1201;
+	volatile uint32_t *fb = job + 0x200 / 4;
+	fb[4] = 0x1400;
+	fb[8] = fb[10] = 15 | (15u << 16);
+	fb[11] = (2u << 6) | (8u << 9) | (1u << 24);
+	fb[12] = (1u << 16) | ((clear_trial & 1) ? 0 : (1u << 29));
+	volatile uint32_t *rt = job + 0x280 / 4;
+	rt[0] = 1u << 26;
+	rt[1] = 1u | (19u << 3) | (2u << 10) | (0x688u << 16) | (1u << 31);
+	if (clear_trial & 2) rt[1] |= 1u << 15; /* Match Mesa's dithering setting. */
+	rt[8] = DESCRIPTOR_VA + OUTPUT_OFFSET;
+	rt[10] = 64;
+	for (unsigned i = 12; i < 16; i++) rt[i] = EXPECTED_OUTPUT;
+	job[0x400 / 4] = job[0x480 / 4] = 0x00800080;
+	for (unsigned i = OUTPUT_OFFSET / 4; i < PAGE / 4; i++) job[i] = OUTPUT_INITIAL;
+#else
 	job[8] = DESCRIPTOR_VA + OUTPUT_OFFSET;
 	job[10] = 3;                        /* Write Value Type: zero */
 	job[OUTPUT_OFFSET / 4] = OUTPUT_INITIAL;
+#endif
 	for (uintptr_t address = SCRATCH_PA; address < SCRATCH_PA + 5 * PAGE; address += 64)
 		__asm__ volatile("dc cvac, %0" :: "r"(address) : "memory");
 	__asm__ volatile("dsb sy" ::: "memory");
@@ -69,7 +96,7 @@ static void prepare_job(void)
 
 struct dream2lte_mali_job_result dream2lte_mali_job_probe(void)
 {
-	struct dream2lte_mali_job_result result = {0, 0, 0, OUTPUT_INITIAL};
+	struct dream2lte_mali_job_result result = {0, 0, 0, OUTPUT_INITIAL, 0, 0};
 	/* Use only an idle GPU and an unconfigured address space. */
 	if (gpu_read(0) != MALI_G71_ID || ((gpu_read(0x14) >> 8) & 0xff) < 36 ||
 	    !(gpu_read(0x18) & 1u) || gpu_read(JOB_ACTIVE) || gpu_read(JOB_RAW) ||
@@ -81,7 +108,7 @@ struct dream2lte_mali_job_result dream2lte_mali_job_probe(void)
 	unsigned slot = 0;
 	uint32_t slots = gpu_read(0x1c);
 	for (; slot < 3; slot++) {
-		if ((slots & (1u << slot)) && (gpu_read(0xc0 + slot * 4) & (1u << 2)))
+		if ((slots & (1u << slot)) && (gpu_read(0xc0 + slot * 4) & (1u << JOB_TYPE)))
 			break;
 	}
 	unsigned js = JOB_MMIO + slot * 0x80;
@@ -158,12 +185,23 @@ struct dream2lte_mali_job_result dream2lte_mali_job_probe(void)
 	if (mmu_fault)
 		gpu_write(MMU_CLEAR, mmu_fault);
 	volatile uint32_t *job = (volatile uint32_t *)(SCRATCH_PA + 4 * PAGE);
-	__asm__ volatile("dc ivac, %0; dc ivac, %1; dsb sy" ::
-	    "r"(job), "r"(job + OUTPUT_OFFSET / 4) : "memory");
+	for (uintptr_t address = (uintptr_t)job; address < (uintptr_t)job + PAGE; address += 64)
+		__asm__ volatile("dc ivac, %0" :: "r"(address) : "memory");
+	__asm__ volatile("dsb sy" ::: "memory");
 	result.exception = job[0];
+	result.fault_low = job[2];
+	result.fault_high = job[3];
 	result.value = job[OUTPUT_OFFSET / 4];
-	if (result.irq == (1u << slot) && result.exception == 1 && result.value == 0)
+	unsigned errors = 0;
+#ifdef DREAM2LTE_MALI_CLEAR
+	for (unsigned i = 0; i < (PAGE - OUTPUT_OFFSET) / 4; i++)
+		if (job[OUTPUT_OFFSET / 4 + i] != (i < 256 ? EXPECTED_OUTPUT : OUTPUT_INITIAL)) errors++;
+#endif
+	if (result.irq == (1u << slot) && result.exception == 1 && result.value == EXPECTED_OUTPUT && !errors)
 		result.stage = 4;
+#ifdef DREAM2LTE_MALI_CLEAR
+	clear_trial++;
+#endif
 	for (unsigned i = 0; i < 5; i++)
 		gpu_write(js + job_saved[i], job_values[i]);
 

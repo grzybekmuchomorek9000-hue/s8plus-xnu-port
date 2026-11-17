@@ -47,11 +47,14 @@ def main():
     parser.add_argument('--touch', action='store_true', help='power and configure the S8+ touch bus')
     parser.add_argument('--mali-probe', action='store_true', help='run the optional Mali power and ID probe')
     parser.add_argument('--mali-job', action='store_true', help='submit a diagnostic Mali WRITE_VALUE command')
+    parser.add_argument('--mali-clear', action='store_true', help='replace the diagnostic job with a 16x16 fragment clear')
     args = parser.parse_args()
     if args.output.exists():
         parser.error('output already exists')
     if args.mali_job and not args.mali_probe:
         parser.error('--mali-job requires --mali-probe')
+    if args.mali_clear and not args.mali_job:
+        parser.error('--mali-clear requires --mali-job')
     shim = Path(__file__).resolve().parents[2] / 'shim'
     donor = shim / 'dreamlte'
     zig = ['zig', 'cc', '-target', 'aarch64-linux-gnu', '-mcpu=cortex_a53',
@@ -72,6 +75,8 @@ def main():
         mali = ['-DDREAM2LTE_MALI_PROBE', shim / 'dream2lte/mali_probe.c'] if args.mali_probe else []
         if args.mali_job:
             mali += ['-DDREAM2LTE_MALI_JOB', shim / 'dream2lte/mali_job_probe.c']
+        if args.mali_clear:
+            mali += ['-DDREAM2LTE_MALI_CLEAR']
         inner = build('inner', '-DDREAM2LTE_BRINGUP', *touch, *mali, donor / 'start.S',
                       donor / 'loader.c', shim / 'fdt.c')
         if len(inner) % 16:

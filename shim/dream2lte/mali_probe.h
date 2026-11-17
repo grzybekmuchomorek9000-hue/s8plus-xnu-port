@@ -16,6 +16,8 @@ struct dream2lte_mali_job_result {
 	uint32_t irq;
 	uint32_t exception;
 	uint32_t value;
+	uint32_t fault_low;
+	uint32_t fault_high;
 };
 
 struct dream2lte_mali_job_result dream2lte_mali_job_probe(void);

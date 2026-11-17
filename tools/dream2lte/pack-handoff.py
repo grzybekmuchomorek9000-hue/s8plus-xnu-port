@@ -29,6 +29,7 @@ def main():
                         help='package the experimental Mali WRITE_VALUE job')
     parser.add_argument('--mali-runtime', action='store_true',
                         help='run the opt-in XNU Mali offscreen rendering test (not UI acceleration)')
+    parser.add_argument('--mali-clear', action='store_true', help='include the loader fragment-clear diagnostic')
     parser.add_argument('--present-hz', type=int, choices=(10, 15, 20, 30, 60),
                         help='set the maximum software framebuffer presentation rate')
     parser.add_argument('--a53-cores', type=int, choices=range(1, 5), default=1,
@@ -72,6 +73,8 @@ def main():
         parser.error('--mali-probe requires --ios-userland and a loader built with --mali-probe')
     if args.mali_job != (b'S8+ MALI WRITE_VALUE job' in image) or (args.mali_job and not args.mali_probe):
         parser.error('--mali-job requires --mali-probe and a loader built with --mali-job')
+    if args.mali_clear != (b'S8+ MALI FRAGMENT clear' in image) or (args.mali_clear and not args.mali_job):
+        parser.error('--mali-clear requires --mali-job and a loader built with --mali-clear')
     cmdline = (f'debug=0xc serial=3 cpus={args.a53_cores} keepsyms=1 -enable_kprintf_spam -noprogress '
                'wdt=-1 wdt_test=no_user_checkin a5touchprobe=0 s8touch=0 a5keys=0 '
                'sweetbattery=0 sweetfb_native=1')
