@@ -33,6 +33,11 @@ jobs:
           text = source.read_text()
           assert text.count(old) == 1
           source.write_text(text.replace(old, 'if true # S8 offline compiler only'))
+          nir = Path('mesa/src/compiler/nir/meson.build')
+          text = nir.read_text()
+          anchor = 'files_libnir = []'
+          assert text.count(anchor) == 1
+          nir.write_text(text.replace(anchor, 'with_nir_headers_only = false\n' + anchor))
           parent = Path('mesa/src/panfrost/meson.build')
           with parent.open('a') as output:
               output.write('''
