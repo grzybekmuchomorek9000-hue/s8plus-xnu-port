@@ -372,3 +372,15 @@ memory map, GPU, display-panel or touch support has been established.
   `bd7ee181400803f636dc1d5743d4e54a6283076fbbfb2364f65cb76ce46491a7`.
   Requested reboot and physical return to TWRP after the Apple logo.
   Runtime-v3 GPU job/rendering result is pending.
+- Recovered `ios-mali-runtime-v3-result.txt`. AS0 setup now passes.
+  WRITE_VALUE descriptor completion is 1 and first output word is 0 in
+  XNU-owned RAM. The raw done IRQ was not observed and one extra word
+  differed from the test expectation. Thus runtime memory access is
+  observed, but this run did not pass full validation or attempt clear16.
+  CNTPCT-based elapsed output was implausible (`1114114168` microseconds).
+- Changed the diagnostic write from ZERO (implicit width) to explicit
+  IMMEDIATE32, kept strict whole-buffer bounds checks, and added completion
+  detection through the DMA descriptor plus inactive/empty slot state.
+  Error IRQs remain failures. Runtime timing now uses mach_absolute_time.
+  Eleven model scenarios pass, including missing done IRQ and error IRQ.
+  Local XNU object compilation passes. Hardware validation is pending.

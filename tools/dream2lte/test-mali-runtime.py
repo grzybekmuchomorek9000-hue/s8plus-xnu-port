@@ -27,6 +27,11 @@ static void bzero(void *p, unsigned long n) {
     while (n--) *v++ = 0;
 }
 static void IOLog(const char *, ...) {}
+static uint64_t mach_absolute_time() {
+    uint64_t t;
+    __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(t));
+    return t;
+}
 static bool PE_parse_boot_argn(const char *, void *v, unsigned) {
     *(int *)v = 1; return true;
 }
@@ -118,11 +123,13 @@ def check(elf, scenario):
                 values[0x2000] = 1
                 write32(desc, 0xc0)
                 return
-            values[0x1000] = 1 << slot
+            values[0x1000] = (0 if scenario == 'done-without-irq' else
+                              1 << (slot + 16) if scenario == 'error-irq' else 1 << slot)
             write32(desc, 1)
             target = cpu + 5*4096
             if kind == 2:
                 assert read32(desc + 32) == 0x2000
+                assert read32(desc + 40) == 6  # Explicit 32-bit store.
                 write32(target, 0)
             else:
                 assert read32(desc + 40) == 0x1201
@@ -150,8 +157,9 @@ def check(elf, scenario):
     uc.emu_start(entry, 0x2ff000, count=2000000)
     assert uc.reg_read(UC_ARM64_REG_PC) == 0x2ff000, (scenario, 'did not terminate')
     result = uc.reg_read(UC_ARM64_REG_X0)
-    assert bool(result) == (scenario in ('success', 'deadline-completion')), (scenario, result)
-    if scenario in ('success', 'deadline-completion'): assert jobs == [2, 9, 9, 9] and complete
+    success_cases = ('success', 'deadline-completion', 'done-without-irq')
+    assert bool(result) == (scenario in success_cases), (scenario, result)
+    if scenario in success_cases: assert jobs == [2, 9, 9, 9] and complete
     if scenario in ('busy', 'wrong-id', 'power-timeout', 'mmu-timeout'): assert not jobs
     if scenario != 'mmu-timeout': assert values.get(0x2400, 0) == 0
     if scenario not in ('busy', 'wrong-id', 'power-timeout', 'mmu-timeout'):
@@ -182,7 +190,8 @@ def main():
                         '-Werror', '-Wall', '-Wextra', '-I', str(work), '-Wl,-e,entry',
                         '-Wl,-T,' + str(work/'check.ld'), str(work/'check.cpp'), '-o', str(elf)], check=True)
         data = elf.read_bytes()
-        for scenario in ('success', 'deadline-completion', 'busy', 'wrong-id', 'power-timeout', 'mmu-timeout',
+        for scenario in ('success', 'deadline-completion', 'done-without-irq', 'error-irq',
+                         'busy', 'wrong-id', 'power-timeout', 'mmu-timeout',
                          'job-timeout', 'mmu-fault', 'overrun'):
             check(data, scenario)
 

@@ -24,16 +24,13 @@ static void wr(unsigned off, uint32_t v) {
 	__asm__ volatile("dsb sy" ::: "memory");
 }
 static uint64_t ticks() {
-	uint64_t t;
-	__asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(t));
-	return t;
+	return mach_absolute_time();
 }
 static bool wait(unsigned off, uint32_t mask, uint32_t value) {
 	uint64_t start = ticks();
 	do {
 		if ((rd(off) & mask) == value) return true;
-		/* Use the architectural counter directly. The first XNU IODelay
-		 * trial timed out although readback immediately showed AS idle. */
+		/* Poll without the platform's calibrated delay routine. */
 		__asm__ volatile("yield" ::: "memory");
 	} while (ticks() - start < 2600000); /* 100 ms at 26 MHz */
 	return (rd(off) & mask) == value; /* Final sample at the deadline. */
@@ -74,7 +71,7 @@ static void prepare(bool fragment, uint32_t color) {
 	job[4] = (1u << 16) | ((fragment ? 9u : 2u) << 1) | 1;
 	if (!fragment) {
 		job[8] = 0x2000;
-		job[10] = 3; /* WRITE_VALUE ZERO */
+		job[10] = 6; /* WRITE_VALUE IMMEDIATE32, exactly four zero bytes. */
 	} else {
 		/* One 16x16 tile. No geometry and no shader: hardware RT clear. */
 		job[10] = 0x1201; /* framebuffer 0x1200, MFBD flag */
@@ -152,6 +149,11 @@ static bool run(bool fragment, uint32_t color) {
 			irq = rd(0x1000) & irqMask;
 			fault = rd(0x2000) & 0x10001;
 			if (irq || fault) break;
+			/* DMA descriptor completion is authoritative even when the raw
+			 * interrupt is not observed. Invalidate only the descriptor line. */
+			__asm__ volatile("dc ivac, %0; dsb sy" :: "r"(bytes + COMMAND) : "memory");
+			if (*(volatile uint32_t *)(bytes + COMMAND) == 1 &&
+			    !(rd(0x1010) & irqMask) && !rd(js + 0x60)) break;
 			__asm__ volatile("yield" ::: "memory");
 		} while (ticks() - start < 2600000);
 		elapsed = ticks() - start;
@@ -171,7 +173,7 @@ static bool run(bool fragment, uint32_t color) {
 		uint32_t expect = i < (fragment ? 256u : 1u) ? (fragment ? color : 0) : POISON;
 		if (((volatile uint32_t *)(bytes + OUTPUT))[i] != expect) errors++;
 	}
-	ok = irq == (1u << slot) && !fault && status == 1 && !errors;
+	ok = !(irq & (1u << (slot + 16))) && !fault && status == 1 && !errors;
 	if (ok) stage = 4;
 	if (!ok) dump(stage);
 cleanup:
