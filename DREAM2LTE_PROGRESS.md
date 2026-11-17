@@ -260,3 +260,22 @@ memory map, GPU, display-panel or touch support has been established.
 - Restored and verified the one-core 768 MiB FTS8 BOOT
   (`c83e77c655e6c675fec11bdbf4b7c7752d62163b791aeefa5c55911d230be321`)
   and requested a normal iOS reboot after capturing the logs.
+
+## Mali runtime and offscreen rendering trial (2026-11-17)
+
+- The user requested continued GPU acceleration work and returned the phone
+  to TWRP. Recovery reports SM-G955F/dream2lte and TWRP 3.7.1_12-0.
+- Patch 0125 adds an opt-in `s8mali_runtime=1` path within XNU's framebuffer
+  service. It allocates its own 28 KiB contiguous wired DMA buffer rather
+  than reusing the loader's physical scratch address. The four-level GPU
+  page table maps only the command page and the offscreen target page.
+- The trial first repeats WRITE_VALUE under XNU, then requests a 16x16
+  RGBA8 hardware clear through the fragment job slot. It checks all 256
+  result pixels, the unused target-page tail and an unmapped canary page.
+  Two later color changes run on the framebuffer work loop. There is no
+  IOAccelerator registration or GPU rendering of CoreAnimation yet.
+- The ARM64 code compiles with Zig and eight Unicorn/MMIO-model scenarios
+  pass: success, busy hardware, wrong ID, power timeout, MMU timeout,
+  job timeout, MMU fault and buffer overrun. These check driver control
+  flow and containment; the model does not validate real GPU descriptors.
+- Kernel compilation and actual hardware rendering remain unverified.

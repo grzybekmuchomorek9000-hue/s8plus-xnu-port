@@ -27,6 +27,8 @@ def main():
                         help='package the experimental Mali power and ID probe')
     parser.add_argument('--mali-job', action='store_true',
                         help='package the experimental Mali WRITE_VALUE job')
+    parser.add_argument('--mali-runtime', action='store_true',
+                        help='run the opt-in XNU Mali offscreen rendering test (not UI acceleration)')
     parser.add_argument('--present-hz', type=int, choices=(10, 15, 20, 30, 60),
                         help='set the maximum software framebuffer presentation rate')
     parser.add_argument('--a53-cores', type=int, choices=range(1, 5), default=1,
@@ -52,6 +54,9 @@ def main():
     expected = f'{hashlib.sha256(kernel.read_bytes()).hexdigest()}  {kernel.name}'
     if expected not in checksums:
         parser.error('kernel SHA-256 does not match the build manifest')
+    if args.mali_runtime and (not args.ios_userland or
+            b'S8 MALI: runtime v1 XNU-owned DMA=' not in kernel.read_bytes()):
+        parser.error('--mali-runtime requires iOS userland and the runtime-enabled kernel')
     boot = files / 'oneui-boot.img'
     stock = boot.read_bytes()
     loader = args.loader or files / 'xnu-handoff-Image'
@@ -84,6 +89,8 @@ def main():
                         ' a5fb_keep_on=1 a5fb_noconsole=1')
     if args.trace_startup:
         cmdline += ' startup_debug=1'
+    if args.mali_runtime:
+        cmdline += ' s8mali_runtime=1'
     if args.present_hz is not None:
         cmdline += f' sweetfb_hz={args.present_hz}'
     with tempfile.TemporaryDirectory() as tmp:
