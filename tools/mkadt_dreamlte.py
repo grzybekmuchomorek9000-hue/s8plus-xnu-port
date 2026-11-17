@@ -23,7 +23,7 @@ import mkadt
 DRAM_BASE = 0x880000000
 # 512 MiB, the A5XELTE-proven size: with the whole 2 GiB bank the first S8
 # boot panicked in kmem_range_init (kernel VA claims in the 39-bit 4K layout).
-DRAM_SIZE = 0x20000000
+DRAM_MIB = 512
 FB_PHYS, FB_W, FB_H = 0xcc000000, 1440, 2960
 TIMEBASE = 26000000
 
@@ -69,9 +69,11 @@ def cpu_node(logical):
     ]
 
 
-def build(canvas=(FB_W, FB_H), board='dreamlte', probe_ufs=False):
+def build(canvas=(FB_W, FB_H), board='dreamlte', probe_ufs=False, ram_mib=DRAM_MIB):
     if board not in ('dreamlte', 'dream2lte'):
         raise ValueError('unsupported board')
+    if ram_mib not in (DRAM_MIB, 768) or (board != 'dream2lte' and ram_mib != DRAM_MIB):
+        raise ValueError('768 MiB is only available for S8+ trials')
     # Confirmed on the captured SM-G955F: 2 GiB high bank and a 1440x2960
     # scanout at FB_PHYS. Reuse the donor's 512 MiB kernel window initially.
     root = mkadt.build(seed=os.urandom(64), qemu=True)
@@ -84,7 +86,7 @@ def build(canvas=(FB_W, FB_H), board='dreamlte', probe_ufs=False):
              mkadt.cstr('AppleARM'))
     chosen = child(root, 'chosen')
     set_prop(chosen, 'dram-base', mkadt.u64(DRAM_BASE))
-    set_prop(chosen, 'dram-size', mkadt.u64(DRAM_SIZE))
+    set_prop(chosen, 'dram-size', mkadt.u64(ram_mib * 1024**2))
     set_prop(chosen, 'firmware-version', mkadt.cstr(board + '-entry'))
     set_prop(chosen, 'system-firmware-version', mkadt.cstr(board + '-entry'))
     cpus = child(root, 'cpus')
@@ -145,8 +147,9 @@ if __name__ == '__main__':
     parser.add_argument('--board', choices=('dreamlte', 'dream2lte'), default='dreamlte')
     parser.add_argument('--probe-ufs', action='store_true',
                         help='include the verified Exynos UFS MMIO ranges in the S8+ ADT')
+    parser.add_argument('--ram-mib', type=int, choices=(DRAM_MIB, 768), default=DRAM_MIB)
     args = parser.parse_args()
     blob = adt.serialize(build(tuple(int(v) for v in args.canvas.split('x')),
-                               board=args.board, probe_ufs=args.probe_ufs))
+                               board=args.board, probe_ufs=args.probe_ufs, ram_mib=args.ram_mib))
     args.output.write_bytes(blob)
     print(f'{args.output}: {len(blob)} bytes')

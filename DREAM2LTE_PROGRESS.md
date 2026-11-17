@@ -188,3 +188,69 @@ memory map, GPU, display-panel or touch support has been established.
   screen, then a photo of the open Settings app after being asked to tap
   its icon. This verifies navigation by swipe and tap on the SM-G955F.
   The known lock-screen BOOT remains available locally for rollback.
+
+## UI performance and Mali
+
+- The user reported 10–30 second delays opening or scrolling menus. The
+  one-core FTS8 console ring shows contact-down and contact-up events
+  reaching HID, an HFS swap-file error, and repeated relaunches of services
+  including bluetoothd and fairplayd.H2. It gives no direct input-latency
+  measurement. The existing native software display bridge targets 10 Hz.
+- Prepared independent BOOT trials with `--a53-cores 2` and
+  `--present-hz 20`. Both use the working FTS8 loader, XNU from run
+  `43974446505`, and the current iOS USERDATA. Binary comparison verified
+  the selected boot argument, a fresh ADT random seed, and the recomputed
+  Android BOOT digest as the only changes relative to the working image.
+- Wrote and verified the two-core BOOT on the device. The padded partition
+  SHA-256 is `77b6ee3b7d2644f9561d3274059a5a0d9aefeed98af75be3dc5f2a4333ad96c5`.
+  The console reports 2/2 Cortex-A53 CPUs online with SGI1 verified,
+  and FTS8 contacts reached HID. The screen froze during the unlock
+  animation, so the trial was unstable in use.
+- Prepared and flashed a separate `--ram-mib 768` candidate using one
+  active core and the same FTS8 driver. Its memory base and current iOS
+  partition match the one-core baseline. Padded BOOT SHA-256
+  `c83e77c655e6c675fec11bdbf4b7c7752d62163b791aeefa5c55911d230be321`.
+  The phone reached the UI, but the user still reported stuttering.
+  The one-core 512 MiB FTS8 BOOT is available as the rollback image.
+- TWRP identified the GPU at `0x13900000` as Mali Bifrost architecture
+  6.0.10. The captured Linux DT also identifies G3D power domain
+  `0x164840e0` and the JOB, MMU and GPU interrupts. This is Android driver
+  evidence. The iOS bridge currently copies software-rendered frames to the
+  display buffer. Mesa Panfrost provides Mali GLES/Vulkan building blocks,
+  while providing hardware rendering to native iOS would require an XNU
+  driver and an iOS graphics integration layer.
+
+## Mali-G71 power and identification probe
+
+- Built an opt-in ARM64 loader probe using the Exynos8895 G3D sequence
+  in Samsung's `pmucal_local_exynos8895.h` (exynos-linux-stable/dreamlte
+  commit `baef434858eda94d675e56b9f47a1e4fb6f0b53e`). The probe checks PMU
+  status, brings up an initially off G3D domain, reads the Mali GPU ID,
+  and restores the former state after a successful power-off wait. It
+  records results in the loader console and XNU boot arguments.
+- ARM64 emulation checked the complete on/read/off sequence, already-on
+  and transitional states, and both power-transition timeout cases.
+- Prepared `s8plus-ios-mali-probe-boot.img` SHA-256
+  `875301f68bda33e23792f7ae237ac0f150048641220dd43194190a13f60c3b6e`.
+  Wrote and verified BOOT with SHA-256
+  `7b5aeb15c2b8f8b16a8059bc328f6847b7e23ae33419c2810fcb1223f59a22ed`.
+  The physical SM-G955F returned GPU ID `0x60a00001` and G3D status
+  `0x0003000f` before and after the read. The domain was already on,
+  so this run exercised direct GPU register access without a transition.
+
+## Mali-G71 job manager trial
+
+- Added a separate opt-in WRITE_VALUE command. It uses the legacy
+  Panfrost LPAE format and a private mapped page in the verified high RAM
+  bank, above the XNU window. The descriptor and result are in that page.
+  The result is a completed zero write into an initially nonzero word.
+- Used Linux Panfrost `141b164bbe186423e295b139e40e8e2d11cf1341` for
+  the MMU and job registers, and Mesa `e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae`
+  genxml v6 for the descriptor. ARM64 simulation exercised success,
+  register restoration, busy GPU, MMU fault and timeout cases.
+- Candidate `s8plus-ios-mali-job-v2-boot.img` SHA-256
+  `9b1559b46427c9f1cad3ff766b40dc9edb83964b62976aef53554b613c2c78dd`.
+  Verified the flashed BOOT with SHA-256
+  `d40085bd9d573accf0c3d8498a4dfd622d8c0979964dfa7313ec391833fc3156`.
+  The physical job result is pending. The UI still uses the existing
+  software framebuffer path.

@@ -23,11 +23,23 @@ def main():
                       help='boot an iOS HFS+ image already placed in USERDATA')
     parser.add_argument('--touch', action='store_true',
                         help='package the S8+ FTS8 touch loader with iOS userland')
+    parser.add_argument('--mali-probe', action='store_true',
+                        help='package the experimental Mali power and ID probe')
+    parser.add_argument('--mali-job', action='store_true',
+                        help='package the experimental Mali WRITE_VALUE job')
+    parser.add_argument('--present-hz', type=int, choices=(10, 15, 20, 30, 60),
+                        help='set the maximum software framebuffer presentation rate')
+    parser.add_argument('--a53-cores', type=int, choices=range(1, 5), default=1,
+                        help='use this many Cortex-A53 cores for an iOS userland trial')
+    parser.add_argument('--ram-mib', type=int, choices=(512, 768),
+                        help='set the memory window for an S8+ iOS userland trial')
     parser.add_argument('--trace-startup', action='store_true',
                         help='print verbose XNU startup checkpoints')
     args = parser.parse_args()
     if args.output.exists():
         parser.error('output already exists')
+    if (args.present_hz is not None or args.a53_cores != 1 or args.ram_mib is not None) and not args.ios_userland:
+        parser.error('performance settings require --ios-userland')
     files = args.capture
     repo = Path(__file__).resolve().parents[2]
     manifest = json.loads((files / 'manifest.json').read_text(encoding='utf-8'))
@@ -51,10 +63,16 @@ def main():
     touch_loader = b'S8+ FTS8 power and bus ready' in image
     if args.touch != touch_loader or (args.touch and not args.ios_userland):
         parser.error('--touch requires --ios-userland and a loader built with --touch')
-    cmdline = ('debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress '
+    if args.mali_probe != (b'S8+ MALI G3D probe' in image) or (args.mali_probe and not args.ios_userland):
+        parser.error('--mali-probe requires --ios-userland and a loader built with --mali-probe')
+    if args.mali_job != (b'S8+ MALI WRITE_VALUE job' in image) or (args.mali_job and not args.mali_probe):
+        parser.error('--mali-job requires --mali-probe and a loader built with --mali-job')
+    cmdline = (f'debug=0xc serial=3 cpus={args.a53_cores} keepsyms=1 -enable_kprintf_spam -noprogress '
                'wdt=-1 wdt_test=no_user_checkin a5touchprobe=0 s8touch=0 a5keys=0 '
                'sweetbattery=0 sweetfb_native=1')
     adt_options = ['--board', 'dream2lte']
+    if args.ram_mib is not None:
+        adt_options += ['--ram-mib', str(args.ram_mib)]
     if args.probe_ufs or args.ios_userland:
         adt_options.append('--probe-ufs')
         cmdline += ' rd=ufsroot0 ufsroot=USERDATA'
@@ -66,6 +84,8 @@ def main():
                         ' a5fb_keep_on=1 a5fb_noconsole=1')
     if args.trace_startup:
         cmdline += ' startup_debug=1'
+    if args.present_hz is not None:
+        cmdline += f' sweetfb_hz={args.present_hz}'
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         adt = work / 'dream2lte.adt'

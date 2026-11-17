@@ -19,6 +19,9 @@
 #include "smp_probe.h"
 #include "touch_probe.h"
 #include "pmic.h"
+#ifdef DREAM2LTE_MALI_PROBE
+#include "../dream2lte/mali_probe.h"
+#endif
 #include "display_probe.h"
 
 #define UFS_PROBE_DMA		0x8f0000000UL	/* high bank, outside XNU's window */
@@ -284,6 +287,25 @@ static void enable_dream2lte_touch(volatile struct boot_args *ba)
 }
 #endif
 
+#ifdef DREAM2LTE_MALI_PROBE
+static void append_bootarg_hex(volatile struct boot_args *ba, const char *key, uint32_t value)
+{
+	static const char digits[] = "0123456789abcdef";
+	unsigned at = 0, length = 0;
+	while (at < BOOT_LINE_LENGTH && ba->CommandLine[at])
+		at++;
+	while (key[length])
+		length++;
+	if (at + length + 8 >= BOOT_LINE_LENGTH)
+		return;
+	for (unsigned i = 0; i < length; i++)
+		ba->CommandLine[at++] = key[i];
+	for (int shift = 28; shift >= 0; shift -= 4)
+		ba->CommandLine[at++] = digits[(value >> shift) & 0xf];
+	ba->CommandLine[at] = 0;
+}
+#endif
+
 /* XNU's platform expert has no clock on the S8 (iOS showed 1969). Pass the
  * PMIC RTC as "s8rtc=" = UTC seconds at system-counter zero; the kernel
  * adds the counter (patch 0124, PEGetUTCTimeOfDay). RTC bytes from 0x04:
@@ -470,6 +492,35 @@ uint64_t dl_main(uintptr_t dtb, uint64_t el, uint64_t sctlr)
 	}
 #else
 	out("S8+ peripheral probes skipped\n");
+#endif
+#ifdef DREAM2LTE_MALI_PROBE
+	out("S8+ MALI G3D probe\n");
+	struct dream2lte_mali_result mali = dream2lte_mali_probe();
+	kv("before", mali.initial_status);
+	kv("powered", mali.powered_status);
+	kv("gpu-id", mali.gpu_id);
+	kv("restored", mali.final_status);
+	out("\n");
+	append_bootarg_hex(ba, " s8g3dbefore=0x", mali.initial_status);
+	append_bootarg_hex(ba, " s8g3dtry=0x", mali.powered_status);
+	append_bootarg_hex(ba, " s8maliid=0x", mali.gpu_id);
+	append_bootarg_hex(ba, " s8g3dafter=0x", mali.final_status);
+#ifdef DREAM2LTE_MALI_JOB
+	out("S8+ MALI WRITE_VALUE job\n");
+	struct dream2lte_mali_job_result job = {0, 0, 0, 0xdeadbeef};
+	if ((mali.final_status & 0xf) == 0xf)
+		job = dream2lte_mali_job_probe();
+	kv("stage", job.stage);
+	kv("irq", job.irq);
+	kv("exception", job.exception);
+	kv("value", job.value);
+	out("\n");
+	append_bootarg_hex(ba, " s8malijob=0x", job.stage);
+	append_bootarg_hex(ba, " s8maliirq=0x", job.irq);
+	append_bootarg_hex(ba, " s8maliex=0x", job.exception);
+	append_bootarg_hex(ba, " s8maliout=0x", job.value);
+#endif
+	clean(ba_pa, ba_pa + PAGE_SIZE);
 #endif
 #endif
 	/* smp_probe(kv, out) proved the PMU power-up (boot 19); it leaves the
