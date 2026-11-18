@@ -11,9 +11,9 @@ on:
           - dream2lte
         default: dreamlte
       build_host:
-        description: Xcode 16 build host
+        description: macOS build host (15 uses Xcode 16, 26 uses Xcode 26.3)
         type: choice
-        options: [macos-15-intel, macos-15]
+        options: [macos-15-intel, macos-15, macos-26-intel]
         default: macos-15-intel
       macos_version:
         description: macOS release whose xnu to build (13.5 = xnu-8796, iOS 16 era)
@@ -90,7 +90,11 @@ jobs:
           sudo chmod +x "$xcodes_stub"
           sw_vers
           ls -d /Applications/Xcode*.app
-          XC=$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)
+          if [ "${{ inputs.build_host }}" = macos-26-intel ]; then
+            XC=/Applications/Xcode_26.3.app
+          else
+            XC=$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)
+          fi
           test -d "$XC/Contents/Developer"
           echo "DEVELOPER_DIR=$XC/Contents/Developer" >> "$GITHUB_ENV"
           sudo xcode-select -s "$XC"

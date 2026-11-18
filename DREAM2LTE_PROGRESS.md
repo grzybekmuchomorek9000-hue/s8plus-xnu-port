@@ -478,3 +478,14 @@ memory map, GPU, display-panel or touch support has been established.
   presentation requests a 30 Hz target. A frame copied with any CPU
   layer restores 10 Hz. An explicit `sweetfb_hz` is respected. These
   are requested intervals; actual FPS and touch latency need the phone.
+- Rechecked TWRP and the complete runtime-v5 BOOT digest on the physical
+  SM-G955F before the presenter trial. The adaptive revision, `760b786`,
+  passed all 23 ARM64 model cases against the Mesa packets and compiled
+  against the captured XNU headers. Two earlier macOS 15 jobs ended before
+  checkout because GitHub could not allocate hosted runners. An optional
+  macOS 26 Intel build host selects Xcode 26.3 for a separate retry.
+- Symbolicated the single v5 process sample against build 20H392. Of
+  36 sampled SpringBoard and backboardd thread PCs, 16 were in mach_msg2,
+  14 in workq_kernreturn, three in ulock_wait, two in semaphore calls
+  and one in bsdthread_ctl. The sample has no known gesture timestamp
+  and cannot identify what caused the observed scrolling delay.
