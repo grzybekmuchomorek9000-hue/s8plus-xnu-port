@@ -7,6 +7,8 @@
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir_builder.h"
 #include "panfrost/compiler/pan_compiler.h"
+#include "panfrost/lib/pan_encoder.h"
+#include "panfrost/lib/pan_shader.h"
 #include "util/u_dynarray.h"
 
 /* The driver owns the six-word parameter block at 0x1700. One lane moves
@@ -31,11 +33,42 @@ static void emit_rectangle(nir_builder *b)
    nir_pop_if(b, inside);
 }
 
+/* Independent packet reference from Mesa's v6 packers and the actual
+ * compiler info. The Windows test compares this with the running ARM code. */
+static bool reference(FILE *f, struct pan_shader_info *info, unsigned w, unsigned h,
+                      unsigned bx, unsigned by)
+{
+   uint32_t job[pan_size(COMPUTE_JOB) / 4] = {0};
+   uint32_t rsd[pan_size(RENDERER_STATE) / 4], tls[pan_size(LOCAL_STORAGE) / 4];
+   pan_section_pack(job, COMPUTE_JOB, HEADER, cfg) {
+      cfg.type = MALI_JOB_TYPE_COMPUTE;
+      cfg.index = 1;
+   }
+   pan_pack_work_groups_compute(pan_section_ptr(job, COMPUTE_JOB, INVOCATION),
+      DIV_ROUND_UP(w, bx), DIV_ROUND_UP(h, by), 1, bx, by, 1, false, false);
+   pan_section_pack(job, COMPUTE_JOB, PARAMETERS, cfg) {
+      cfg.job_task_split = util_logbase2_ceil(bx + 1) + util_logbase2_ceil(by + 1) + 1;
+   }
+   pan_section_pack(job, COMPUTE_JOB, DRAW, cfg) {
+      cfg.state = 0x1500;
+      cfg.thread_storage = 0x1600;
+   }
+   pan_pack(rsd, RENDERER_STATE, cfg) {
+      pan_shader_prepare_rsd(info, 0x1800, &cfg);
+   }
+   pan_pack(tls, LOCAL_STORAGE, cfg) {
+      cfg.wls_instances = MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;
+   }
+   return fwrite(job, 1, sizeof(job), f) == sizeof(job) &&
+          fwrite(rsd, 1, sizeof(rsd), f) == sizeof(rsd) &&
+          fwrite(tls, 1, sizeof(tls), f) == sizeof(tls);
+}
+
 int main(int argc, char **argv)
 {
-   bool rectangle = argc == 3 && !strcmp(argv[2], "rectangle");
-   if (argc != 2 && !rectangle) {
-      fprintf(stderr, "usage: %s OUTPUT.bin [rectangle]\n", argv[0]);
+   bool rectangle = argc >= 3 && !strcmp(argv[2], "rectangle");
+   if (argc < 2 || argc > 4 || (argc >= 3 && !rectangle && strcmp(argv[2], "copy16"))) {
+      fprintf(stderr, "usage: %s OUTPUT.bin [copy16|rectangle [reference.bin]]\n", argv[0]);
       return 2;
    }
    glsl_type_singleton_init_or_ref();
@@ -69,6 +102,18 @@ int main(int argc, char **argv)
    if (!output) return 1;
    bool ok = fwrite(binary.data, 1, binary.size, output) == binary.size;
    ok = fclose(output) == 0 && ok;
+   if (argc == 4) {
+      FILE *f = fopen(argv[3], "wb");
+      if (!f) return 1;
+      if (rectangle) {
+         ok = reference(f, &info, 13, 7, 8, 4) && ok;
+         ok = reference(f, &info, 1440, 2960, 8, 4) && ok;
+      } else {
+         ok = reference(f, &info, 1, 1, 1, 1) && ok;
+      }
+      ok = fclose(f) == 0 && ok;
+      pan_disassemble(stderr, binary.data, binary.size, inputs.gpu_id, false);
+   }
    printf("{\"gpu_id\":\"0x60a00001\",\"bytes\":%u,\"work_registers\":%u,"
           "\"preload\":\"0x%llx\",\"tls\":%u,\"wls\":%u}\n",
           binary.size, info.work_reg_count, (unsigned long long)info.preload,

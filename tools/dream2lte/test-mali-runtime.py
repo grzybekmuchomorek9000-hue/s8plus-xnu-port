@@ -97,7 +97,7 @@ def segments_and_entry(data):
     return entry, result
 
 
-def check(elf, scenario):
+def check(elf, scenario, reference):
     from unicorn import Uc, UC_ARCH_ARM64, UC_MODE_ARM, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE, UC_HOOK_CODE
     from unicorn.arm64_const import UC_ARM64_REG_PC, UC_ARM64_REG_SP, UC_ARM64_REG_X0, UC_ARM64_REG_LR
     uc = Uc(UC_ARCH_ARM64, UC_MODE_ARM)
@@ -173,6 +173,15 @@ def check(elf, scenario):
                 assert struct.unpack('<Q', uc.mem_read(cpu + 3*4096 + i*8, 8))[0] == (0x880100000 + (i+3)*4096) | 0x2c1
             assert read32(cpu + 3*4096 + 3*8) == 0  # canary is unmapped
             rectangle = kind == 4 and read32(desc + 0x530) != 0
+            if kind == 4 and reference:
+                packet = bytes(uc.mem_read(desc, 192) + uc.mem_read(desc + 0x500, 64) +
+                               uc.mem_read(desc + 0x600, 32))
+                name = ('copy16' if not rectangle else
+                        'panel' if read32(desc + 0x700) == 0x2000000 else 'rectangle')
+                expected = reference[name]
+                if packet != expected:
+                    diff = [(i, a, b) for i, (a, b) in enumerate(zip(packet, expected)) if a != b]
+                    raise AssertionError((name, 'driver vs Mesa packet bytes', diff[:12]))
             jobs.append('rect' if rectangle else kind)
             if scenario == 'job-timeout': return
             values[off] = 0
@@ -290,10 +299,18 @@ def check(elf, scenario):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--unicorn-path', type=Path)
+    parser.add_argument('--mesa-artifact', type=Path, help='compare job, shader state and storage with Mesa packers')
     args = parser.parse_args()
     if args.unicorn_path:
         import sys
         sys.path.insert(0, str(args.unicorn_path.resolve()))
+    reference = {}
+    if args.mesa_artifact:
+        copy = (args.mesa_artifact / 'copy16-packets.bin').read_bytes()
+        rectangles = (args.mesa_artifact / 'rectangle-packets.bin').read_bytes()
+        if len(copy) != 288 or len(rectangles) != 576:
+            raise ValueError('unexpected reference packet lengths')
+        reference = {'copy16': copy, 'rectangle': rectangles[:288], 'panel': rectangles[288:]}
     root = Path(__file__).resolve().parents[2]
     header = root / 'xnu/dream2lte/S8MaliRuntime.h'
     with tempfile.TemporaryDirectory() as name:
@@ -315,7 +332,7 @@ def main():
                          'job-timeout', 'mmu-fault', 'overrun', 'missing-compute',
                          'copy-no-store', 'copy-overrun', 'copy-source-damaged', 'rect-wrong-pitch',
                          'rect-tail', 'compute-slot2', 'panel-frames', 'panel-offset', 'panel-readback-failure', 'panel-flush-timeout'):
-            check(data, scenario)
+            check(data, scenario, reference)
 
 
 if __name__ == '__main__':

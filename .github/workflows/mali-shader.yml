@@ -41,9 +41,11 @@ jobs:
           parent = Path('mesa/src/panfrost/meson.build')
           with parent.open('a') as output:
               output.write('''
+          subdir('genxml')
           executable('s8-mali-copy', 's8-copy.c',
             include_directories: [inc_include, inc_src, inc_panfrost],
-            dependencies: [idep_nir, idep_mesautil, libpanfrost_model_dep],
+            c_args: ['-DPAN_ARCH=6'],
+            dependencies: [idep_nir, idep_mesautil, idep_pan_packers, libpanfrost_model_dep, dep_libdrm],
             link_with: [libpanfrost_compiler])
           ''')
           PY
@@ -57,8 +59,10 @@ jobs:
             -Dmesa-clc=auto -Dprecomp-compiler=auto -Dbuild-tests=false
           ninja -C mesa-build src/panfrost/s8-mali-copy
           mkdir -p out
-          mesa-build/src/panfrost/s8-mali-copy out/g71-copy16.bin > out/g71-copy16.json
-          mesa-build/src/panfrost/s8-mali-copy out/g71-rectangle.bin rectangle > out/g71-rectangle.json
+          for name in copy16 rectangle; do
+            mesa-build/src/panfrost/s8-mali-copy "out/g71-$name.bin" "$name" "out/$name-packets.bin" \
+              > "out/g71-$name.json" 2> "out/$name.asm"
+          done
           printf '%s\n' e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae > out/mesa-revision.txt
           (cd out && sha256sum g71-copy16.bin g71-rectangle.bin > SHA256SUMS)
           cat out/g71-copy16.json out/g71-rectangle.json
