@@ -39,7 +39,8 @@ static bool reference(FILE *f, struct pan_shader_info *info, unsigned w, unsigne
                       unsigned bx, unsigned by)
 {
    uint32_t job[pan_size(COMPUTE_JOB) / 4] = {0};
-   uint32_t rsd[pan_size(RENDERER_STATE) / 4], tls[pan_size(LOCAL_STORAGE) / 4];
+   struct mali_renderer_state_packed rsd;
+   struct mali_local_storage_packed tls;
    pan_section_pack(job, COMPUTE_JOB, HEADER, cfg) {
       cfg.type = MALI_JOB_TYPE_COMPUTE;
       cfg.index = 1;
@@ -53,15 +54,15 @@ static bool reference(FILE *f, struct pan_shader_info *info, unsigned w, unsigne
       cfg.state = 0x1500;
       cfg.thread_storage = 0x1600;
    }
-   pan_pack(rsd, RENDERER_STATE, cfg) {
+   pan_pack(&rsd, RENDERER_STATE, cfg) {
       pan_shader_prepare_rsd(info, 0x1800, &cfg);
    }
-   pan_pack(tls, LOCAL_STORAGE, cfg) {
+   pan_pack(&tls, LOCAL_STORAGE, cfg) {
       cfg.wls_instances = MALI_LOCAL_STORAGE_NO_WORKGROUP_MEM;
    }
    return fwrite(job, 1, sizeof(job), f) == sizeof(job) &&
-          fwrite(rsd, 1, sizeof(rsd), f) == sizeof(rsd) &&
-          fwrite(tls, 1, sizeof(tls), f) == sizeof(tls);
+          fwrite(&rsd, 1, sizeof(rsd), f) == sizeof(rsd) &&
+          fwrite(&tls, 1, sizeof(tls), f) == sizeof(tls);
 }
 
 int main(int argc, char **argv)
