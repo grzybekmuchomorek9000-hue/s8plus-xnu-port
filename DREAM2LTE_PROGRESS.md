@@ -489,3 +489,16 @@ memory map, GPU, display-panel or touch support has been established.
   14 in workq_kernreturn, three in ulock_wait, two in semaphore calls
   and one in bsdthread_ctl. The sample has no known gesture timestamp
   and cannot identify what caused the observed scrolling delay.
+- macOS 15 Intel run `44367814054` also expired without a runner.
+  macOS 26 Intel run `44370694281` at `f2a5d97` succeeded. The dedicated
+  dream2lte kernel SHA-256 is
+  `ce25a0109923f86965ccf07b9db3c775d31bb0f436531b244b2872bdd4004dbb`.
+  Both Mesa shader binaries and the presenter and cadence log messages
+  were verified in the linked kernel. It uses the same ARM64 CPU subtype,
+  static pointer format and executable entry as the booted v5 image.
+- Wrote `s8plus-ios-mali-present-v6-boot.img` (16,850,960 bytes, SHA-256
+  `10e53f3b57a1c3872e034fb79e463c0e044bb2de75eb0e79930c29cc5f7e0b1f`)
+  on the SM-G955F in TWRP. Full 40 MiB BOOT readback matched
+  `9feddd9b9e7136670c3a4a094f5d78404d51fad38db842358e654315f372e25e`.
+  Requested iOS boot and a physical Settings scroll followed by return
+  to recovery. Hardware compute, frame-copy and scroll results are pending.
