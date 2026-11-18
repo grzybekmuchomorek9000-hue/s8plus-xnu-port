@@ -81,6 +81,10 @@ extern "C" int entry(unsigned mode) {
     s.memory = &memory[1];
     if (S8Mali::presentPanel(&s, 0x48000000, 0,0,0,0,1440,2960)) flags |= 2;
     if (S8Mali::panelHeld) flags |= 4;
+    if (S8Mali::presentationHz(true, false, 10) != (S8Mali::panelHeld ? 10u : 30u) ||
+        S8Mali::presentationHz(false, false, 30) != (S8Mali::panelHeld ? 10u : 30u) ||
+        S8Mali::presentationHz(true, true, 30) != 10 ||
+        S8Mali::presentationHz(false, true, 30) != 10) return 8;
     return flags;
 }
 '''

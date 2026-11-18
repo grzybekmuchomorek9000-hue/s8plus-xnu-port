@@ -16,6 +16,10 @@ def main():
     board = '#if defined(DREAMLTE) && DREAM2LTE_BRINGUP\n'
     for old, new in [
         ('#include <sys/proc.h>\n', '#include <sys/proc.h>\n#include "S8MaliRuntime.h"\n#include "S8MaliPanel.h"\n'),
+        ('\tuint64_t      fMinGap;', board + '\tbool          fMaliAutoRate, fMaliFastRate;\n#endif\n\tuint64_t      fMinGap;'),
+        ('\tPE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));\n', board +
+         '\tfMaliAutoRate = !PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));\n'
+         '\tfMaliFastRate = false;\n#else\n\tPE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));\n#endif\n'),
         ('\tfVsync->setTimeoutUS(SWEET_FB_VSYNC_US);\n',
          board + '\tS8Mali::init();\n\tS8Mali::enablePanel(fPhys, fWidth, fHeight, fRowBytes);\n'
          '#endif\n\tfVsync->setTimeoutUS(SWEET_FB_VSYNC_US);\n'),
@@ -26,9 +30,22 @@ def main():
         ('\t\tif (step <= 6) {\n\t\t\tfor (uint32_t y', '\t\tif (step <= 6) {\n' + board +
          '\t\t\tIOLockLock(fb->fPresentLock);\n\t\t\tif (!S8Mali::panelHeld)\n#endif\n\t\t\tfor (uint32_t y'),
         ('\t\t}\n\t\tsender->setTimeoutUS', board + '\t\t\tIOLockUnlock(fb->fPresentLock);\n#endif\n\t\t}\n\t\tsender->setTimeoutUS'),
+        ('\tuint32_t mask = get32(rec, 0x104);\n', '\tuint32_t mask = get32(rec, 0x104);\n' +
+         board + '\tbool copiedOnGpu = false, copiedOnCpu = false;\n#endif\n'),
         ('\t\tif (src != 0 && bpe == 4) {\n', '\t\tif (src != 0 && bpe == 4) {\n' + board +
          '\t\t\tif (S8Mali::presentPanel(s, fPixels, sx, sy, dx, dy, w, h)) {\n'
-         '\t\t\t\ts->release();\n\t\t\t\tcontinue;\n\t\t\t}\n#endif\n'),
+         '\t\t\t\tcopiedOnGpu = !S8Mali::panelHeld;\n\t\t\t\ts->release();\n\t\t\t\tcontinue;\n\t\t\t}\n'
+         '\t\t\tcopiedOnCpu = true;\n#endif\n'),
+        ('\t\ts->release();\n\t}\n\tIOLockUnlock(fPresentLock);', '\t\ts->release();\n\t}\n' + board +
+         '\tif (fMaliAutoRate) {\n'
+         '\t\tunsigned hz = S8Mali::presentationHz(copiedOnGpu, copiedOnCpu, fMaliFastRate ? 30 : 10);\n'
+         '\t\tbool fast = hz == 30;\n'
+         '\t\tif (fast != fMaliFastRate) {\n\t\t\tfMaliFastRate = fast;\n'
+         '\t\t\tIOLockLock(fLock);\n'
+         '\t\t\tfFlushTicks = 60 / hz;\n\t\t\tfMinGap = 26000000ULL / hz;\n'
+         '\t\t\tIOLockUnlock(fLock);\n\t\t\tif (S8Mali::frames <= 3 || !S8Mali::ready)\n'
+         '\t\t\t\tIOLog("S8 MALI: presentation target %u Hz\\n", hz);\n\t\t}\n\t}\n'
+         '#endif\n\tIOLockUnlock(fPresentLock);'),
     ]:
         if after.count(old) != 1:
             raise ValueError(f'expected exactly one anchor: {old!r}')

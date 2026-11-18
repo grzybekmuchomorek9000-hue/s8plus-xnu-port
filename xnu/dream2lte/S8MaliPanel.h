@@ -14,6 +14,11 @@ static uint64_t leafPhysical;
 static bool panelEnabled, panelHeld;
 static unsigned frames;
 
+static unsigned presentationHz(bool copiedOnGpu, bool copiedOnCpu, unsigned current) {
+	if (panelHeld || copiedOnCpu) return 10;
+	return copiedOnGpu ? 30 : current;
+}
+
 static void cleanRange(uintptr_t start, unsigned size) {
 	for (uintptr_t a = start; a < start + size; a += 64)
 		__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");

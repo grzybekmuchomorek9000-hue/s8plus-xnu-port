@@ -456,3 +456,25 @@ memory map, GPU, display-panel or touch support has been established.
   Unsupported surfaces use the existing presenter. The CPU still renders
   Core Animation layers. Physical shader results, panel output and
   end-to-end scrolling performance for this version are unverified.
+- On Windows the compiled ARM64 driver passed 23 MMIO-model scenarios.
+  Shader run `44307365732` independently packed the compute job, renderer
+  state and local storage with Mesa. All 288 bytes match the ARM64
+  driver for each of the 16-byte, 13x7 and 1440x2960 dispatches. Both
+  program binaries also occur verbatim in the compiled XNU framebuffer
+  object. The model simulates GPU memory operations. It does not execute
+  Bifrost machine instructions or measure display latency.
+- Full compositor references located in the same research session:
+  [S9+ G72 Darwin/Panfrost build](https://github.com/danstronics/ios-s9plus-exynos/tree/2d092398040f98685b0c5a07776df5e9f199b9dc/core/tools/mesa)
+  and [S7 Panfrost/EAGL frontend](https://github.com/wardevsa/ios-a5xelte/tree/2aafd7a0a1422a538399c449e160219b8aeba65e/gpu/hakios-gl).
+  The S7 `mesa-ios` reference artifact from run `44186561972` has an
+  arm64 iOS 16.0 load command and matching published checksums for
+  libhakiosgl, libOSMesa and libdrm. The S7 libdrm needs HeroGPU. The
+  S9+ alternative needs HakiosMali. Our presenter is private to the
+  framebuffer. Neither interface is registered by the S8+ kernel.
+  Upstream Mesa 26.3.0 lists G71 support; its v6 descriptor XML matches
+  the pinned compiler's schema. The S7/S9+ scripts use older Mesa 25.0.7.
+  No donor library was installed or included in BOOT.
+- The candidate starts at the existing 10 Hz default. An all-GPU
+  presentation requests a 30 Hz target. A frame copied with any CPU
+  layer restores 10 Hz. An explicit `sweetfb_hz` is respected. These
+  are requested intervals; actual FPS and touch latency need the phone.

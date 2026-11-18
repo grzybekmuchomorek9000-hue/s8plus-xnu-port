@@ -9,7 +9,29 @@
  
  enum {
  	kSweetFBGetLayerDefaultSurface  = 3,
-@@ -225,6 +227,10 @@
+@@ -123,6 +125,9 @@
+ 	uint32_t      fFadeStep;      /* fade-out steps done while off */
+ 	IOLock       *fPresentLock;   /* one panel copy at a time */
+ 	uint64_t      fLastPresent;   /* mach_absolute_time of the last copy */
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++	bool          fMaliAutoRate, fMaliFastRate;
++#endif
+ 	uint64_t      fMinGap;        /* 1/hz in timebase ticks */
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+@@ -218,13 +223,22 @@
+ 		return false;
+ 	}
+ 	uint32_t hz = 10;
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++	fMaliAutoRate = !PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));
++	fMaliFastRate = false;
++#else
+ 	PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));
++#endif
+ 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
+ 	fMinGap = 26000000ULL / (hz == 0 ? 60 : hz);     /* 26 MHz timebase */
+ 	fPresentLock = IOLockAlloc();
  	if (fPresentLock == NULL) {
  		return false;
  	}
@@ -20,7 +42,7 @@
  	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
  
  	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
-@@ -242,6 +248,13 @@
+@@ -242,6 +256,13 @@
  	AppleCLCD *fb = (AppleCLCD *)owner;
  	uint64_t now = mach_absolute_time();
  	uint64_t count = ++fb->fVsyncCount;
@@ -34,7 +56,7 @@
  	uint64_t values[6] = {
  		(uint32_t)count, (uint32_t)(count >> 32),
  		(uint32_t)now, (uint32_t)(now >> 32),
-@@ -262,12 +275,19 @@
+@@ -262,12 +283,19 @@
  		}
  		IOLockUnlock(fb->fLock);
  		if (step <= 6) {
@@ -54,19 +76,53 @@
  		}
  		sender->setTimeoutUS(SWEET_FB_VSYNC_US);
  		return;
-@@ -468,6 +488,12 @@
+@@ -381,6 +409,9 @@
+ AppleCLCD::present(const uint8_t *rec)
+ {
+ 	uint32_t mask = get32(rec, 0x104);
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++	bool copiedOnGpu = false, copiedOnCpu = false;
++#endif
+ 	IOLockLock(fPresentLock);
+ #if defined(DREAMLTE)
+ 	sweet_fb_wait_frame_done();
+@@ -468,6 +499,14 @@
  			src = 0;
  		}
  		if (src != 0 && bpe == 4) {
 +#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
 +			if (S8Mali::presentPanel(s, fPixels, sx, sy, dx, dy, w, h)) {
++				copiedOnGpu = !S8Mali::panelHeld;
 +				s->release();
 +				continue;
 +			}
++			copiedOnCpu = true;
 +#endif
  			for (int32_t y = 0; y < h; y++) {
  				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
  				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+@@ -476,6 +515,21 @@
+ 		}
+ 		s->release();
+ 	}
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++	if (fMaliAutoRate) {
++		unsigned hz = S8Mali::presentationHz(copiedOnGpu, copiedOnCpu, fMaliFastRate ? 30 : 10);
++		bool fast = hz == 30;
++		if (fast != fMaliFastRate) {
++			fMaliFastRate = fast;
++			IOLockLock(fLock);
++			fFlushTicks = 60 / hz;
++			fMinGap = 26000000ULL / hz;
++			IOLockUnlock(fLock);
++			if (S8Mali::frames <= 3 || !S8Mali::ready)
++				IOLog("S8 MALI: presentation target %u Hz\n", hz);
++		}
++	}
++#endif
+ 	IOLockUnlock(fPresentLock);
+ }
+ 
 --- /dev/null
 +++ b/iokit/Kernel/arm/S8MaliRuntime.h
 @@ -0,0 +1,353 @@
@@ -466,7 +522,7 @@
 +};
 --- /dev/null
 +++ b/iokit/Kernel/arm/S8MaliPanel.h
-@@ -0,0 +1,118 @@
+@@ -0,0 +1,123 @@
 +/* SPDX-License-Identifier: GPL-2.0-only
 + * Internal to the dream2lte framebuffer. Map only the observed full-frame
 + * IOSurface layout and the panel published by the framebuffer at startup.
@@ -482,6 +538,11 @@
 +static uint64_t leafPhysical;
 +static bool panelEnabled, panelHeld;
 +static unsigned frames;
++
++static unsigned presentationHz(bool copiedOnGpu, bool copiedOnCpu, unsigned current) {
++	if (panelHeld || copiedOnCpu) return 10;
++	return copiedOnGpu ? 30 : current;
++}
 +
 +static void cleanRange(uintptr_t start, unsigned size) {
 +	for (uintptr_t a = start; a < start + size; a += 64)
