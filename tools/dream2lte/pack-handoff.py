@@ -29,6 +29,8 @@ def main():
                         help='package the experimental Mali WRITE_VALUE job')
     parser.add_argument('--mali-runtime', action='store_true',
                         help='run the opt-in XNU Mali offscreen rendering test (not UI acceleration)')
+    parser.add_argument('--mali-present', action='store_true',
+                        help='enable G71 full-frame BGRA copies after the compute self-tests')
     parser.add_argument('--mali-clear', action='store_true', help='include the loader fragment-clear diagnostic')
     parser.add_argument('--present-hz', type=int, choices=(10, 15, 20, 30, 60),
                         help='set the maximum software framebuffer presentation rate')
@@ -58,6 +60,8 @@ def main():
     if args.mali_runtime and (not args.ios_userland or
             b'S8 MALI: runtime v1 XNU-owned DMA=' not in kernel.read_bytes()):
         parser.error('--mali-runtime requires iOS userland and the runtime-enabled kernel')
+    if args.mali_present and (not args.mali_runtime or b'S8 MALI: panel presenter armed' not in kernel.read_bytes()):
+        parser.error('--mali-present requires --mali-runtime and a kernel with the panel presenter')
     boot = files / 'oneui-boot.img'
     stock = boot.read_bytes()
     loader = args.loader or files / 'xnu-handoff-Image'
@@ -94,6 +98,8 @@ def main():
         cmdline += ' startup_debug=1'
     if args.mali_runtime:
         cmdline += ' s8mali_runtime=1'
+    if args.mali_present:
+        cmdline += ' s8mali_present=1'
     if args.present_hz is not None:
         cmdline += f' sweetfb_hz={args.present_hz}'
     with tempfile.TemporaryDirectory() as tmp:

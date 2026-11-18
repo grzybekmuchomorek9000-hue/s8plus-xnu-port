@@ -2,13 +2,34 @@
  * Opt-in Mali-G71 runtime bring-up for dream2lte. Not an IOAccelerator.
  * Register/LPAE definitions: Linux Panfrost 141b164bbe18.
  * Fragment descriptors: Mesa genxml v6, e24dc5bd1e7f (MIT).
- * Included in SweetFramebuffer.cpp; all access is on its one work loop.
+ * Included in SweetFramebuffer.cpp. After startup the presenter lock
+ * serializes diagnostic jobs and copies from both presentation paths.
  */
-#if defined(DREAMLTE)
+#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
 #include <IOKit/IOBufferMemoryDescriptor.h>
 extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 
 namespace S8Mali {
+#include "S8MaliCopyShader.h"
+enum JobKind { Write32, Copy16, Clear16, RectTest, PanelCopy };
+static unsigned jobType(JobKind kind) {
+	return kind == Write32 ? 2 : kind == Clear16 ? 9 : 4;
+}
+struct Rectangle {
+	uint32_t src, dst, srcStride, dstStride, width, height;
+};
+/* The diagnostic includes padding on each side and partial workgroups. */
+static const Rectangle testRect = {0x2040, 0x2800, 80, 68, 13, 7};
+static uint32_t testPixel(unsigned x, unsigned y) {
+	return 0xac005a00u ^ ((y * testRect.width + x) * 0x10203u);
+}
+static unsigned bitsForCount(unsigned n) {
+	unsigned bits = 0;
+	for (n--; n; n >>= 1) bits++;
+	return bits;
+}
+enum { PANEL_SRC = 0x02000000, PANEL_DST = 0x04000000, TABLES_PER_SURFACE = 9 };
+static const uint32_t copyPattern[4] = {0x11223344, 0x55667788, 0x89abcdef, 0x10203040};
 static vm_offset_t regs;
 static IOBufferMemoryDescriptor *memory;
 static uintptr_t bytes;
@@ -60,18 +81,56 @@ static void invalidate() {
 /* Two GPU pages only: descriptors at 0x1000, target at 0x2000.
  * The canary page is allocated by XNU but deliberately not GPU-mapped.
  */
-static void prepare(bool fragment, uint32_t color) {
+static void prepare(JobKind kind, uint32_t color, const Rectangle *rect, uint64_t leafPhys) {
 	bzero((void *)bytes, SIZE);
 	volatile uint64_t *pt = (volatile uint64_t *)bytes;
 	for (unsigned i = 0; i < 3; i++)
 		pt[i * PAGE / 8] = (physical + (i + 1) * PAGE) | 3;
 	pt[3 * PAGE / 8 + 1] = (physical + COMMAND) | 0x2c1;
 	pt[3 * PAGE / 8 + 2] = (physical + OUTPUT) | 0x2c1;
+	if (kind == PanelCopy) {
+		volatile uint64_t *l2 = pt + 2 * PAGE / 8;
+		for (unsigned i = 0; i < TABLES_PER_SURFACE; i++) {
+			l2[(PANEL_SRC >> 21) + i] = (leafPhys + i * PAGE) | 3;
+			l2[(PANEL_DST >> 21) + i] = (leafPhys + (TABLES_PER_SURFACE + i) * PAGE) | 3;
+		}
+	}
 	volatile uint32_t *dst = (volatile uint32_t *)(bytes + OUTPUT);
 	for (unsigned i = 0; i < 2 * PAGE / 4; i++) dst[i] = POISON;
 	volatile uint32_t *job = (volatile uint32_t *)(bytes + COMMAND);
-	job[4] = (1u << 16) | ((fragment ? 9u : 2u) << 1) | 1;
-	if (!fragment) {
+	job[4] = (1u << 16) | (jobType(kind) << 1) | 1;
+	if (jobType(kind) == 4) {
+		job[16] = 3;       /* 64-bit draw descriptor, four components */
+		job[30] = 0x1500;  /* draw.state -> renderer state */
+		job[44] = 0x1600;  /* draw.thread_storage -> local storage */
+		job[0x500 / 4] = 0x1800; /* renderer state shader pointer */
+		job[0x600 / 4 + 1] = 31; /* no workgroup-local memory */
+		if (kind == Copy16) {
+			job[10] = 3u << 26; /* one invocation, 1x1x1 local size */
+			for (unsigned i = 0; i < sizeof(s8_mali_copy_shader) / sizeof(uint32_t); i++)
+				job[0x800 / 4 + i] = s8_mali_copy_shader[i];
+			for (unsigned i = 0; i < 4; i++) dst[i] = copyPattern[i];
+		} else {
+			const unsigned gx = (rect->width + 7) / 8, gy = (rect->height + 3) / 4;
+			const unsigned yShift = 5 + bitsForCount(gx), zShift = yShift + bitsForCount(gy);
+			job[8] = 7 | (3u << 3) | ((gx - 1) << 5) | ((gy - 1) << yShift);
+			job[9] = 3 | (5u << 5) | (5u << 10) | (yShift << 16) | (zShift << 22) | (5u << 28);
+			job[10] = 8u << 26; /* task split for 8x4x1 */
+			job[0x500 / 4 + 12] = 3u << 12; /* global invocation X and Y */
+			job[0x700 / 4] = rect->src;
+			job[0x700 / 4 + 1] = rect->dst;
+			job[0x700 / 4 + 2] = rect->srcStride;
+			job[0x700 / 4 + 3] = rect->dstStride;
+			job[0x700 / 4 + 4] = rect->width;
+			job[0x700 / 4 + 5] = rect->height;
+			for (unsigned i = 0; i < sizeof(s8_mali_rectangle_shader) / sizeof(uint32_t); i++)
+				job[0x800 / 4 + i] = s8_mali_rectangle_shader[i];
+			if (kind == RectTest)
+				for (unsigned y = 0; y < rect->height; y++)
+					for (unsigned x = 0; x < rect->width; x++)
+						dst[(rect->src - 0x2000 + y * rect->srcStride) / 4 + x] = testPixel(x, y);
+		}
+	} else if (kind == Write32) {
 		job[8] = 0x2000;
 		job[10] = 6; /* WRITE_VALUE IMMEDIATE32, exactly four zero bytes. */
 	} else {
@@ -96,24 +155,28 @@ static void prepare(bool fragment, uint32_t color) {
 	clean();
 }
 
-static bool run(bool fragment, uint32_t color) {
+static bool run(JobKind kind, uint32_t color, const Rectangle *rect = NULL,
+    uint64_t leafPhys = 0, bool *quiesced = NULL) {
+	bool fragment = kind == Clear16;
 	/* Refuse shared, busy, faulted or previously configured hardware. */
-	const unsigned slot = fragment ? 0 : 1;
+	unsigned slot = fragment ? 0 : 1;
+	if (jobType(kind) == 4 && (!(rd(0x1c) & 2) || !(rd(0xc4) & (1u << 4)))) slot = 2;
 	const unsigned js = 0x1800 + 0x80 * slot, as = 0x2400;
 	const uint32_t irqMask = 0x10001u << slot;
 	if (rd(0) != 0x60a00001 || !(rd(0x1c) & (1u << slot)) ||
-	    !(rd(0xc0 + slot * 4) & (1u << (fragment ? 9 : 2))) ||
+	    !(rd(0xc0 + slot * 4) & (1u << jobType(kind))) ||
 	    rd(0x1010) || rd(0x1000) || rd(0x2000) ||
 	    rd(as) || rd(as + 4) || rd(as + 0x30) > 1 || rd(as + 0x34) ||
 	    (rd(as + 0x28) & 1) || rd(js + 0x60)) {
-		IOLog("S8 MALI: runtime skipped busy/incompatible kind=%u\n", fragment);
+		IOLog("S8 MALI: runtime skipped busy/incompatible type=%u features=%x\n",
+		    jobType(kind), rd(0xc0 + slot * 4));
 		dump(0);
 		return false;
 	}
-	const unsigned asOff[6] = {0, 4, 8, 12, 0x30, 0x34};
+	const unsigned asOff[] = {0, 4, 8, 12, 0x30, 0x34, 0x10, 0x14};
 	const unsigned jsOff[5] = {0x40, 0x44, 0x50, 0x54, 0x58};
-	uint32_t asOld[6], jsOld[5];
-	for (unsigned i = 0; i < 6; i++) asOld[i] = rd(as + asOff[i]);
+	uint32_t asOld[8], jsOld[5];
+	for (unsigned i = 0; i < 8; i++) asOld[i] = rd(as + asOff[i]);
 	for (unsigned i = 0; i < 5; i++) jsOld[i] = rd(js + jsOff[i]);
 	uint32_t l2 = rd(0x120), shader = rd(0x100), on = rd(0x140);
 	if (!l2 || !shader || rd(0x124) || rd(0x104) || rd(0x220) || rd(0x200))
@@ -128,7 +191,7 @@ static bool run(bool fragment, uint32_t color) {
 	if (!wait(0x160, l2, l2)) { addShader = 0; goto cleanup; }
 	if (addShader) wr(0x180, addShader);
 	if (!wait(0x140, affinity, affinity)) goto cleanup;
-	prepare(fragment, color);
+	prepare(kind, color, rect, leafPhys);
 	stage = 2;
 	wr(as, (uint32_t)physical | 7);
 	wr(as + 4, (uint32_t)(physical >> 32));
@@ -171,9 +234,25 @@ static bool run(bool fragment, uint32_t color) {
 	}
 	invalidate();
 	status = *(volatile uint32_t *)(bytes + COMMAND);
-	value = *(volatile uint32_t *)(bytes + OUTPUT);
+	value = *(volatile uint32_t *)(bytes + OUTPUT + (kind == Copy16 ? 0x200 : 0));
 	for (unsigned i = 0; i < 2 * PAGE / 4; i++) {
-		uint32_t expect = i < (fragment ? 256u : 1u) ? (fragment ? color : 0) : POISON;
+		uint32_t expect = POISON;
+		if (kind == Write32 && i == 0) expect = 0;
+		if (fragment && i < 256) expect = color;
+		if (kind == Copy16) {
+			if (i < 4) expect = copyPattern[i];
+			if (i >= 128 && i < 132) expect = copyPattern[i - 128];
+		}
+		if (kind == RectTest) {
+			const uint32_t va = 0x2000 + i * 4;
+			const bool target = va >= rect->dst;
+			const uint32_t base = target ? rect->dst : rect->src;
+			const uint32_t pitch = target ? rect->dstStride : rect->srcStride;
+			if (va >= base) {
+				const unsigned y = (va - base) / pitch, x = ((va - base) % pitch) / 4;
+				if (y < rect->height && x < rect->width) expect = testPixel(x, y);
+			}
+		}
 		if (((volatile uint32_t *)(bytes + OUTPUT))[i] != expect) errors++;
 	}
 	ok = !(irq & (1u << (slot + 16))) && !fault && status == 1 && !errors;
@@ -186,8 +265,20 @@ cleanup:
 		if (irq) wr(0x1004, irq);
 		if (fault) wr(0x2004, fault);
 		for (unsigned i = 0; i < 5; i++) wr(js + jsOff[i], jsOld[i]);
-		if (mapped) {
-			for (unsigned i = 0; i < 6; i++) wr(as + asOff[i], asOld[i]);
+		if (mapped && kind == PanelCopy) {
+			/* Retire all translations and outstanding writes before releasing
+			 * an IOSurface or reusing its VA for a different surface. The
+			 * complete private VA range fits in [0, 128 MiB). */
+			wr(as + 0x10, 26); wr(as + 0x14, 0);
+			wr(as + 0x18, 2);
+			stopped = wait(as + 0x28, 1, 0);
+			if (stopped) {
+				wr(as + 0x18, 5);
+				stopped = wait(as + 0x28, 1, 0);
+			}
+		}
+		if (mapped && stopped) {
+			for (unsigned i = 0; i < 8; i++) wr(as + asOff[i], asOld[i]);
 			wr(as + 0x18, 1);
 			stopped = wait(as + 0x28, 1, 0);
 		}
@@ -209,9 +300,12 @@ cleanup:
 			if (irq & (1u << (slot + 16))) { ok = false; stage = 3; }
 		}
 	}
-	IOLog("S8 MALI: runtime %s stage=%u irq=%x mmu=%x status=%x first=%x bad=%u us=%llu cleanup=%u\n",
-	    fragment ? "clear16" : "write", stage, irq, fault, status, value, errors,
-	    elapsed / 26, stopped);
+	if (quiesced) *quiesced = stopped;
+	if (kind != PanelCopy || !ok || !stopped) {
+		const char *names[] = {"write", "copy16", "clear16", "rect13x7", "panel-copy"};
+		IOLog("S8 MALI: runtime %s stage=%u irq=%x mmu=%x status=%x first=%x bad=%u us=%llu cleanup=%u\n",
+		    names[kind], stage, irq, fault, status, value, errors, elapsed / 26, stopped);
+	}
 	return ok && stopped;
 }
 
@@ -242,15 +336,17 @@ static void init() {
 		return;
 	}
 	IOLog("S8 MALI: runtime v1 XNU-owned DMA=%llx size=%u\n", physical, SIZE);
-	ready = run(false, 0);
-	if (ready) ready = run(true, 0xff00ff00);
-	IOLog("S8 MALI: runtime offscreen ready=%u; UI remains CPU-rendered\n", ready);
+	ready = run(Write32, 0);
+	if (ready) ready = run(Clear16, 0xff00ff00);
+	if (ready) ready = run(Copy16, 0);
+	if (ready) ready = run(RectTest, 0, &testRect);
+	IOLog("S8 MALI: runtime offscreen ready=%u\n", ready);
 }
 
 static void tick(uint64_t count) {
 	if (!ready || tests >= 2 || count % 600 != 0) return;
 	++tests;
-	ready = run(true, tests == 1 ? 0xffff0000 : 0xff0000ff);
+	ready = run(Clear16, tests == 1 ? 0xffff0000 : 0xff0000ff);
 	IOLog("S8 MALI: runtime repeat=%u ready=%u\n", tests, ready);
 }
 } /* namespace S8Mali */

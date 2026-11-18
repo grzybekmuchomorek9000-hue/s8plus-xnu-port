@@ -1,47 +1,107 @@
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -51,6 +51,7 @@
+@@ -51,6 +51,8 @@
  #include <pexpert/arm64/board_config.h>
  #include <kern/clock.h>
  #include <sys/proc.h>
 +#include "S8MaliRuntime.h"
++#include "S8MaliPanel.h"
  
  enum {
  	kSweetFBGetLayerDefaultSurface  = 3,
-@@ -225,6 +226,9 @@
+@@ -225,6 +227,10 @@
  	if (fPresentLock == NULL) {
  		return false;
  	}
-+#if defined(DREAMLTE)
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
 +	S8Mali::init();
++	S8Mali::enablePanel(fPhys, fWidth, fHeight, fRowBytes);
 +#endif
  	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
  
  	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
-@@ -242,6 +246,9 @@
+@@ -242,6 +248,13 @@
  	AppleCLCD *fb = (AppleCLCD *)owner;
  	uint64_t now = mach_absolute_time();
  	uint64_t count = ++fb->fVsyncCount;
-+#if defined(DREAMLTE)
-+	S8Mali::tick(count);
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++	if (count % 600 == 0) {
++		IOLockLock(fb->fPresentLock);
++		S8Mali::tick(count);
++		IOLockUnlock(fb->fPresentLock);
++	}
 +#endif
  	uint64_t values[6] = {
  		(uint32_t)count, (uint32_t)(count >> 32),
  		(uint32_t)now, (uint32_t)(now >> 32),
+@@ -262,12 +275,19 @@
+ 		}
+ 		IOLockUnlock(fb->fLock);
+ 		if (step <= 6) {
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++			IOLockLock(fb->fPresentLock);
++			if (!S8Mali::panelHeld)
++#endif
+ 			for (uint32_t y = 0; y < fb->fHeight; y++) {
+ 				volatile uint32_t *row = (volatile uint32_t *)(fb->fPixels + (uint64_t)y * fb->fRowBytes);
+ 				for (uint32_t x = 0; x < fb->fWidth; x++) {
+ 					row[x] = step < 6 ? (row[x] >> 1) & 0x7f7f7f7f : 0;
+ 				}
+ 			}
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++			IOLockUnlock(fb->fPresentLock);
++#endif
+ 		}
+ 		sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 		return;
+@@ -468,6 +488,12 @@
+ 			src = 0;
+ 		}
+ 		if (src != 0 && bpe == 4) {
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++			if (S8Mali::presentPanel(s, fPixels, sx, sy, dx, dy, w, h)) {
++				s->release();
++				continue;
++			}
++#endif
+ 			for (int32_t y = 0; y < h; y++) {
+ 				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
 --- /dev/null
 +++ b/iokit/Kernel/arm/S8MaliRuntime.h
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,353 @@
 +/* SPDX-License-Identifier: GPL-2.0-only
 + * Opt-in Mali-G71 runtime bring-up for dream2lte. Not an IOAccelerator.
 + * Register/LPAE definitions: Linux Panfrost 141b164bbe18.
 + * Fragment descriptors: Mesa genxml v6, e24dc5bd1e7f (MIT).
-+ * Included in SweetFramebuffer.cpp; all access is on its one work loop.
++ * Included in SweetFramebuffer.cpp. After startup the presenter lock
++ * serializes diagnostic jobs and copies from both presentation paths.
 + */
-+#if defined(DREAMLTE)
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
 +#include <IOKit/IOBufferMemoryDescriptor.h>
 +extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +
 +namespace S8Mali {
++#include "S8MaliCopyShader.h"
++enum JobKind { Write32, Copy16, Clear16, RectTest, PanelCopy };
++static unsigned jobType(JobKind kind) {
++	return kind == Write32 ? 2 : kind == Clear16 ? 9 : 4;
++}
++struct Rectangle {
++	uint32_t src, dst, srcStride, dstStride, width, height;
++};
++/* The diagnostic includes padding on each side and partial workgroups. */
++static const Rectangle testRect = {0x2040, 0x2800, 80, 68, 13, 7};
++static uint32_t testPixel(unsigned x, unsigned y) {
++	return 0xac005a00u ^ ((y * testRect.width + x) * 0x10203u);
++}
++static unsigned bitsForCount(unsigned n) {
++	unsigned bits = 0;
++	for (n--; n; n >>= 1) bits++;
++	return bits;
++}
++enum { PANEL_SRC = 0x02000000, PANEL_DST = 0x04000000, TABLES_PER_SURFACE = 9 };
++static const uint32_t copyPattern[4] = {0x11223344, 0x55667788, 0x89abcdef, 0x10203040};
 +static vm_offset_t regs;
 +static IOBufferMemoryDescriptor *memory;
 +static uintptr_t bytes;
@@ -93,18 +153,56 @@
 +/* Two GPU pages only: descriptors at 0x1000, target at 0x2000.
 + * The canary page is allocated by XNU but deliberately not GPU-mapped.
 + */
-+static void prepare(bool fragment, uint32_t color) {
++static void prepare(JobKind kind, uint32_t color, const Rectangle *rect, uint64_t leafPhys) {
 +	bzero((void *)bytes, SIZE);
 +	volatile uint64_t *pt = (volatile uint64_t *)bytes;
 +	for (unsigned i = 0; i < 3; i++)
 +		pt[i * PAGE / 8] = (physical + (i + 1) * PAGE) | 3;
 +	pt[3 * PAGE / 8 + 1] = (physical + COMMAND) | 0x2c1;
 +	pt[3 * PAGE / 8 + 2] = (physical + OUTPUT) | 0x2c1;
++	if (kind == PanelCopy) {
++		volatile uint64_t *l2 = pt + 2 * PAGE / 8;
++		for (unsigned i = 0; i < TABLES_PER_SURFACE; i++) {
++			l2[(PANEL_SRC >> 21) + i] = (leafPhys + i * PAGE) | 3;
++			l2[(PANEL_DST >> 21) + i] = (leafPhys + (TABLES_PER_SURFACE + i) * PAGE) | 3;
++		}
++	}
 +	volatile uint32_t *dst = (volatile uint32_t *)(bytes + OUTPUT);
 +	for (unsigned i = 0; i < 2 * PAGE / 4; i++) dst[i] = POISON;
 +	volatile uint32_t *job = (volatile uint32_t *)(bytes + COMMAND);
-+	job[4] = (1u << 16) | ((fragment ? 9u : 2u) << 1) | 1;
-+	if (!fragment) {
++	job[4] = (1u << 16) | (jobType(kind) << 1) | 1;
++	if (jobType(kind) == 4) {
++		job[16] = 3;       /* 64-bit draw descriptor, four components */
++		job[30] = 0x1500;  /* draw.state -> renderer state */
++		job[44] = 0x1600;  /* draw.thread_storage -> local storage */
++		job[0x500 / 4] = 0x1800; /* renderer state shader pointer */
++		job[0x600 / 4 + 1] = 31; /* no workgroup-local memory */
++		if (kind == Copy16) {
++			job[10] = 3u << 26; /* one invocation, 1x1x1 local size */
++			for (unsigned i = 0; i < sizeof(s8_mali_copy_shader) / sizeof(uint32_t); i++)
++				job[0x800 / 4 + i] = s8_mali_copy_shader[i];
++			for (unsigned i = 0; i < 4; i++) dst[i] = copyPattern[i];
++		} else {
++			const unsigned gx = (rect->width + 7) / 8, gy = (rect->height + 3) / 4;
++			const unsigned yShift = 5 + bitsForCount(gx), zShift = yShift + bitsForCount(gy);
++			job[8] = 7 | (3u << 3) | ((gx - 1) << 5) | ((gy - 1) << yShift);
++			job[9] = 3 | (5u << 5) | (5u << 10) | (yShift << 16) | (zShift << 22) | (5u << 28);
++			job[10] = 8u << 26; /* task split for 8x4x1 */
++			job[0x500 / 4 + 12] = 3u << 12; /* global invocation X and Y */
++			job[0x700 / 4] = rect->src;
++			job[0x700 / 4 + 1] = rect->dst;
++			job[0x700 / 4 + 2] = rect->srcStride;
++			job[0x700 / 4 + 3] = rect->dstStride;
++			job[0x700 / 4 + 4] = rect->width;
++			job[0x700 / 4 + 5] = rect->height;
++			for (unsigned i = 0; i < sizeof(s8_mali_rectangle_shader) / sizeof(uint32_t); i++)
++				job[0x800 / 4 + i] = s8_mali_rectangle_shader[i];
++			if (kind == RectTest)
++				for (unsigned y = 0; y < rect->height; y++)
++					for (unsigned x = 0; x < rect->width; x++)
++						dst[(rect->src - 0x2000 + y * rect->srcStride) / 4 + x] = testPixel(x, y);
++		}
++	} else if (kind == Write32) {
 +		job[8] = 0x2000;
 +		job[10] = 6; /* WRITE_VALUE IMMEDIATE32, exactly four zero bytes. */
 +	} else {
@@ -129,24 +227,28 @@
 +	clean();
 +}
 +
-+static bool run(bool fragment, uint32_t color) {
++static bool run(JobKind kind, uint32_t color, const Rectangle *rect = NULL,
++    uint64_t leafPhys = 0, bool *quiesced = NULL) {
++	bool fragment = kind == Clear16;
 +	/* Refuse shared, busy, faulted or previously configured hardware. */
-+	const unsigned slot = fragment ? 0 : 1;
++	unsigned slot = fragment ? 0 : 1;
++	if (jobType(kind) == 4 && (!(rd(0x1c) & 2) || !(rd(0xc4) & (1u << 4)))) slot = 2;
 +	const unsigned js = 0x1800 + 0x80 * slot, as = 0x2400;
 +	const uint32_t irqMask = 0x10001u << slot;
 +	if (rd(0) != 0x60a00001 || !(rd(0x1c) & (1u << slot)) ||
-+	    !(rd(0xc0 + slot * 4) & (1u << (fragment ? 9 : 2))) ||
++	    !(rd(0xc0 + slot * 4) & (1u << jobType(kind))) ||
 +	    rd(0x1010) || rd(0x1000) || rd(0x2000) ||
 +	    rd(as) || rd(as + 4) || rd(as + 0x30) > 1 || rd(as + 0x34) ||
 +	    (rd(as + 0x28) & 1) || rd(js + 0x60)) {
-+		IOLog("S8 MALI: runtime skipped busy/incompatible kind=%u\n", fragment);
++		IOLog("S8 MALI: runtime skipped busy/incompatible type=%u features=%x\n",
++		    jobType(kind), rd(0xc0 + slot * 4));
 +		dump(0);
 +		return false;
 +	}
-+	const unsigned asOff[6] = {0, 4, 8, 12, 0x30, 0x34};
++	const unsigned asOff[] = {0, 4, 8, 12, 0x30, 0x34, 0x10, 0x14};
 +	const unsigned jsOff[5] = {0x40, 0x44, 0x50, 0x54, 0x58};
-+	uint32_t asOld[6], jsOld[5];
-+	for (unsigned i = 0; i < 6; i++) asOld[i] = rd(as + asOff[i]);
++	uint32_t asOld[8], jsOld[5];
++	for (unsigned i = 0; i < 8; i++) asOld[i] = rd(as + asOff[i]);
 +	for (unsigned i = 0; i < 5; i++) jsOld[i] = rd(js + jsOff[i]);
 +	uint32_t l2 = rd(0x120), shader = rd(0x100), on = rd(0x140);
 +	if (!l2 || !shader || rd(0x124) || rd(0x104) || rd(0x220) || rd(0x200))
@@ -161,7 +263,7 @@
 +	if (!wait(0x160, l2, l2)) { addShader = 0; goto cleanup; }
 +	if (addShader) wr(0x180, addShader);
 +	if (!wait(0x140, affinity, affinity)) goto cleanup;
-+	prepare(fragment, color);
++	prepare(kind, color, rect, leafPhys);
 +	stage = 2;
 +	wr(as, (uint32_t)physical | 7);
 +	wr(as + 4, (uint32_t)(physical >> 32));
@@ -204,9 +306,25 @@
 +	}
 +	invalidate();
 +	status = *(volatile uint32_t *)(bytes + COMMAND);
-+	value = *(volatile uint32_t *)(bytes + OUTPUT);
++	value = *(volatile uint32_t *)(bytes + OUTPUT + (kind == Copy16 ? 0x200 : 0));
 +	for (unsigned i = 0; i < 2 * PAGE / 4; i++) {
-+		uint32_t expect = i < (fragment ? 256u : 1u) ? (fragment ? color : 0) : POISON;
++		uint32_t expect = POISON;
++		if (kind == Write32 && i == 0) expect = 0;
++		if (fragment && i < 256) expect = color;
++		if (kind == Copy16) {
++			if (i < 4) expect = copyPattern[i];
++			if (i >= 128 && i < 132) expect = copyPattern[i - 128];
++		}
++		if (kind == RectTest) {
++			const uint32_t va = 0x2000 + i * 4;
++			const bool target = va >= rect->dst;
++			const uint32_t base = target ? rect->dst : rect->src;
++			const uint32_t pitch = target ? rect->dstStride : rect->srcStride;
++			if (va >= base) {
++				const unsigned y = (va - base) / pitch, x = ((va - base) % pitch) / 4;
++				if (y < rect->height && x < rect->width) expect = testPixel(x, y);
++			}
++		}
 +		if (((volatile uint32_t *)(bytes + OUTPUT))[i] != expect) errors++;
 +	}
 +	ok = !(irq & (1u << (slot + 16))) && !fault && status == 1 && !errors;
@@ -219,8 +337,20 @@
 +		if (irq) wr(0x1004, irq);
 +		if (fault) wr(0x2004, fault);
 +		for (unsigned i = 0; i < 5; i++) wr(js + jsOff[i], jsOld[i]);
-+		if (mapped) {
-+			for (unsigned i = 0; i < 6; i++) wr(as + asOff[i], asOld[i]);
++		if (mapped && kind == PanelCopy) {
++			/* Retire all translations and outstanding writes before releasing
++			 * an IOSurface or reusing its VA for a different surface. The
++			 * complete private VA range fits in [0, 128 MiB). */
++			wr(as + 0x10, 26); wr(as + 0x14, 0);
++			wr(as + 0x18, 2);
++			stopped = wait(as + 0x28, 1, 0);
++			if (stopped) {
++				wr(as + 0x18, 5);
++				stopped = wait(as + 0x28, 1, 0);
++			}
++		}
++		if (mapped && stopped) {
++			for (unsigned i = 0; i < 8; i++) wr(as + asOff[i], asOld[i]);
 +			wr(as + 0x18, 1);
 +			stopped = wait(as + 0x28, 1, 0);
 +		}
@@ -242,9 +372,12 @@
 +			if (irq & (1u << (slot + 16))) { ok = false; stage = 3; }
 +		}
 +	}
-+	IOLog("S8 MALI: runtime %s stage=%u irq=%x mmu=%x status=%x first=%x bad=%u us=%llu cleanup=%u\n",
-+	    fragment ? "clear16" : "write", stage, irq, fault, status, value, errors,
-+	    elapsed / 26, stopped);
++	if (quiesced) *quiesced = stopped;
++	if (kind != PanelCopy || !ok || !stopped) {
++		const char *names[] = {"write", "copy16", "clear16", "rect13x7", "panel-copy"};
++		IOLog("S8 MALI: runtime %s stage=%u irq=%x mmu=%x status=%x first=%x bad=%u us=%llu cleanup=%u\n",
++		    names[kind], stage, irq, fault, status, value, errors, elapsed / 26, stopped);
++	}
 +	return ok && stopped;
 +}
 +
@@ -275,16 +408,180 @@
 +		return;
 +	}
 +	IOLog("S8 MALI: runtime v1 XNU-owned DMA=%llx size=%u\n", physical, SIZE);
-+	ready = run(false, 0);
-+	if (ready) ready = run(true, 0xff00ff00);
-+	IOLog("S8 MALI: runtime offscreen ready=%u; UI remains CPU-rendered\n", ready);
++	ready = run(Write32, 0);
++	if (ready) ready = run(Clear16, 0xff00ff00);
++	if (ready) ready = run(Copy16, 0);
++	if (ready) ready = run(RectTest, 0, &testRect);
++	IOLog("S8 MALI: runtime offscreen ready=%u\n", ready);
 +}
 +
 +static void tick(uint64_t count) {
 +	if (!ready || tests >= 2 || count % 600 != 0) return;
 +	++tests;
-+	ready = run(true, tests == 1 ? 0xffff0000 : 0xff0000ff);
++	ready = run(Clear16, tests == 1 ? 0xffff0000 : 0xff0000ff);
 +	IOLog("S8 MALI: runtime repeat=%u ready=%u\n", tests, ready);
++}
++} /* namespace S8Mali */
++#endif
+--- /dev/null
++++ b/iokit/Kernel/arm/S8MaliCopyShader.h
+@@ -0,0 +1,38 @@
++/* SPDX-License-Identifier: MIT
++ * Generated from mali-copy-shader.c by Mesa e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae, GPU 0x60a00001.
++ */
++/* SHA-256 f69885686735ce54ee3b49bb9e6537c22d6ce42ee2765281ef254d71508ca59b */
++static const uint32_t s8_mali_copy_shader[40] = {
++	0x0000400bu, 0x80cb1844u, 0xc0004197u, 0x31400808u,
++	0x00000070u, 0x00020000u, 0x00000000u, 0x00000000u,
++	0x0000400bu, 0x80cb1844u, 0x00004997u, 0x01800000u,
++	0x00000070u, 0x00022000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++};
++/* SHA-256 819ab9b35721fecc1513f742ffe54062eb920e589e28356c1c2f35ed80ff3fd0 */
++static const uint32_t s8_mali_rectangle_shader[76] = {
++	0x0000400bu, 0x80cb1844u, 0xc0004197u, 0x29400808u,
++	0x00000070u, 0x00017000u, 0x00000000u, 0x00000000u,
++	0x0000400bu, 0x80cb1844u, 0xc0003997u, 0x01400888u,
++	0x00000070u, 0x00017100u, 0x00000000u, 0x00000000u,
++	0x4000002bu, 0x80cb1c78u, 0x8006da23u, 0x00000800u,
++	0x51040023u, 0x80cb1afau, 0x0006da23u, 0xb602c200u,
++	0x00000044u, 0x00000000u, 0x5c780000u, 0x6000f92bu,
++	0xc0004029u, 0x8b8ac043u, 0xc0076591u, 0x31400808u,
++	0x21040025u, 0x9e0608fau, 0x0007187bu, 0x58c2c000u,
++	0x00000005u, 0x80cb185cu, 0xe030319fu, 0xac01c638u,
++	0x00000072u, 0x00000020u, 0x00000000u, 0x00000000u,
++	0x30000029u, 0x9e060c7au, 0x00076593u, 0x01800000u,
++	0x40000025u, 0x80cb1858u, 0x000718c3u, 0x58c2c080u,
++	0x0000009du, 0x80cb185cu, 0xe030b19fu, 0x0001c638u,
++	0x00000053u, 0x80cb185cu, 0x0003fcd3u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++};
+--- /dev/null
++++ b/iokit/Kernel/arm/S8MaliPanel.h
+@@ -0,0 +1,118 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Internal to the dream2lte framebuffer. Map only the observed full-frame
++ * IOSurface layout and the panel published by the framebuffer at startup.
++ * Called under fPresentLock. No userspace job, address or shader interface.
++ */
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++namespace S8Mali {
++enum { PanelW = 1440, PanelH = 2960, SourcePitch = 5888, PanelPitch = 5760,
++       LeafBytes = 2 * TABLES_PER_SURFACE * PAGE };
++static const uint64_t PanelPhys = 0xcc000000;
++static const uint64_t DataXN = 3ULL << 53;
++static IOBufferMemoryDescriptor *leafMemory, *mappedSource;
++static uint64_t leafPhysical;
++static bool panelEnabled, panelHeld;
++static unsigned frames;
++
++static void cleanRange(uintptr_t start, unsigned size) {
++	for (uintptr_t a = start; a < start + size; a += 64)
++		__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
++	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++static void enablePanel(uint64_t phys, unsigned w, unsigned h, unsigned stride) {
++	int opt = 0;
++	if (!ready || !PE_parse_boot_argn("s8mali_present", &opt, sizeof(opt)) || opt != 1 ||
++	    phys != PanelPhys || w != PanelW || h != PanelH || stride != PanelPitch) return;
++	leafMemory = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut | kIOMemoryPhysicallyContiguous, LeafBytes, PAGE);
++	if (!leafMemory) return;
++	IOByteCount n = 0;
++	leafPhysical = leafMemory->getPhysicalSegment(0, &n, kIOMemoryMapperNone);
++	uintptr_t base = (uintptr_t)leafMemory->getBytesNoCopy();
++	if (!leafPhysical || leafPhysical > (1ULL << 36) - LeafBytes || (leafPhysical % PAGE) ||
++	    !base || (base % PAGE) || n < LeafBytes) {
++		leafMemory->release(); leafMemory = NULL;
++		return;
++	}
++	bzero((void *)base, LeafBytes);
++	uint64_t *panel = (uint64_t *)(base + LeafBytes / 2);
++	for (unsigned off = 0; off < PanelH * PanelPitch; off += PAGE)
++		panel[off / PAGE] = (PanelPhys + off) | DataXN | 0x281; /* write-only */
++	cleanRange(base, LeafBytes);
++	panelEnabled = true;
++	IOLog("S8 MALI: panel presenter armed %ux%u src-bpr=%u dst-bpr=%u\n",
++	    PanelW, PanelH, SourcePitch, PanelPitch);
++}
++
++/* IOBufferMemoryDescriptor allocated by SweetSurface is wired. Keep a
++ * reference as long as its leaf entries can be used by a GPU job. */
++static bool mapSource(IOBufferMemoryDescriptor *src) {
++	if (src == mappedSource) return true;
++	if (mappedSource) { mappedSource->release(); mappedSource = NULL; }
++	uint64_t *leaf = (uint64_t *)leafMemory->getBytesNoCopy();
++	const unsigned size = SourcePitch * PanelH;
++	static_assert(size % PAGE == 0 && size <= TABLES_PER_SURFACE * 512 * PAGE, "source range");
++	for (unsigned off = 0; off < size;) {
++		IOByteCount n = 0;
++		uint64_t p = src->getPhysicalSegment(off, &n, kIOMemoryMapperNone);
++		if (n > size - off) n = size - off;
++		if (!p || (p % PAGE) || !n || (n % PAGE) || p > (1ULL << 36) - n ||
++		    (p < PanelPhys + PanelPitch * PanelH && p + n > PanelPhys)) return false;
++		for (unsigned pos = 0; pos < n; pos += PAGE)
++			leaf[(off + pos) / PAGE] = (p + pos) | DataXN | 0x241; /* read-only */
++		off += (unsigned)n;
++	}
++	cleanRange((uintptr_t)leaf, LeafBytes / 2);
++	src->retain();
++	mappedSource = src;
++	return true;
++}
++
++static bool presentPanel(SweetSurface *surface, uintptr_t panel, int sx, int sy,
++    int dx, int dy, int w, int h) {
++	/* A job whose stop could not be confirmed still owns its mappings. */
++	if (panelHeld) return true;
++	if (!panelEnabled || !ready || sx || sy || dx || dy || w != PanelW || h != PanelH ||
++	    surface->width != PanelW || surface->height != PanelH || surface->offset ||
++	    surface->bytesPerRow != SourcePitch || surface->planeCount || surface->parentID ||
++	    surface->pixelFormat != 0x42475241 || surface->bytesPerElement != 4 ||
++	    surface->elementWidth != 1 || surface->elementHeight != 1) return false;
++	IOBufferMemoryDescriptor *src = OSDynamicCast(IOBufferMemoryDescriptor, surface->memory);
++	if (!src || src->getLength() != SourcePitch * PanelH) return false;
++	uintptr_t pixels = (uintptr_t)src->getBytesNoCopy();
++	if (!pixels || (pixels % PAGE)) return false;
++	uint64_t start = ticks();
++	if (!mapSource(src)) {
++		panelEnabled = false;
++		IOLog("S8 MALI: panel source map failed, using CPU\n");
++		return false;
++	}
++	cleanRange(pixels, SourcePitch * PanelH);
++	const Rectangle rect = {PANEL_SRC, PANEL_DST, SourcePitch, PanelPitch, PanelW, PanelH};
++	bool quiesced = true;
++	bool ok = run(PanelCopy, 0, &rect, leafPhysical, &quiesced);
++	if (ok && (frames < 3 || frames % 120 == 0)) {
++		/* Sample corners and centre of this frame, including the last row.
++		 * The scanout's kernel mapping uses write-combine cache mode. */
++		const unsigned x[] = {0, PanelW-1, PanelW/2, 0, PanelW-1};
++		const unsigned y[] = {0, 0, PanelH/2, PanelH-1, PanelH-1};
++		for (unsigned i = 0; i < 5; i++)
++			if (*(volatile uint32_t *)(pixels + y[i]*SourcePitch + 4*x[i]) !=
++			    *(volatile uint32_t *)(panel + y[i]*PanelPitch + 4*x[i])) ok = false;
++		IOLog("S8 MALI: panel frame=%u samples-ok=%u total-us=%llu\n",
++		    frames + 1, ok, (ticks() - start) / 26);
++	}
++	if (!ok) {
++		panelEnabled = false;
++		panelHeld = !quiesced;
++		ready = false;
++		if (quiesced) { mappedSource->release(); mappedSource = NULL; }
++		IOLog("S8 MALI: panel disabled, DMA quiesced=%u\n", quiesced);
++		return panelHeld;
++	}
++	frames++;
++	return true;
 +}
 +} /* namespace S8Mali */
 +#endif

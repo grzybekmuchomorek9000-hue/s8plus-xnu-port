@@ -441,3 +441,18 @@ memory map, GPU, display-panel or touch support has been established.
   Full BOOT readback matched
   `6368dab99f107c4739f1e631d72c0e5b845215037c69a6dbbecdb74eec1618c4`.
   Requested return to TWRP after the logo. Runtime-v5 result is pending.
+- Recovered `ios-mali-runtime-v5-result.txt` from that boot. XNU logged a
+  17 microsecond 32-bit write and three 19 microsecond 16x16 clears
+  (green, red, blue). Each passed all 256 pixels, the target-page tail
+  and the guard page with zero mismatches, zero MMU fault and cleanup=1.
+  The same log records a 1440x2960 BGRA IOSurface at 5888 bytes per row
+  being copied to a panel at 5760 bytes per row. Those swaps still use CPU.
+- Added an opt-in presenter for this exact full-frame BGRA layout. Mesa
+  shader build `44303392370` produced the 304-byte G71 rectangle program
+  (SHA-256 `819ab9b35721fecc1513f742ffe54062eb920e589e28356c1c2f35ed80ff3fd0`).
+  The kernel first checks a 16-byte copy and a patterned 13x7 rectangle
+  with padding and partial workgroups. With `s8mali_present=1`, eligible
+  swaps can then copy the actual surface to the panel using that shader.
+  Unsupported surfaces use the existing presenter. The CPU still renders
+  Core Animation layers. Physical shader results, panel output and
+  end-to-end scrolling performance for this version are unverified.
