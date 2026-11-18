@@ -58,9 +58,10 @@ jobs:
           ninja -C mesa-build src/panfrost/s8-mali-copy
           mkdir -p out
           mesa-build/src/panfrost/s8-mali-copy out/g71-copy16.bin > out/g71-copy16.json
+          mesa-build/src/panfrost/s8-mali-copy out/g71-rectangle.bin rectangle > out/g71-rectangle.json
           printf '%s\n' e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae > out/mesa-revision.txt
-          (cd out && sha256sum g71-copy16.bin > SHA256SUMS)
-          cat out/g71-copy16.json
+          (cd out && sha256sum g71-copy16.bin g71-rectangle.bin > SHA256SUMS)
+          cat out/g71-copy16.json out/g71-rectangle.json
       - uses: actions/upload-artifact@v4
         with:
           name: mali-g71-copy-shader
