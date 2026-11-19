@@ -70,6 +70,20 @@ struct SweetSurface {
 ENTRY = r'''
 extern "C" int entry(unsigned mode) {
     S8Mali::init();
+    if (mode == 5) {
+        S8Mali::logGlesCaps();
+        uint64_t value = 0;
+        return S8Mali::ready &&
+               S8Mali::getGpuProperty(0, value) && value == 0x60a0 &&
+               S8Mali::getGpuProperty(1, value) && value == 1 &&
+               S8Mali::getGpuProperty(2, value) && value == 0x17771777 &&
+               S8Mali::getGpuProperty(3, value) && value == 0x100000002ULL &&
+               S8Mali::getGpuProperty(17, value) && value == 3 &&
+               S8Mali::getGpuProperty(22, value) && value == 1 << 9 &&
+               S8Mali::getGpuProperty(38, value) && value == 2 &&
+               S8Mali::getGpuProperty(44, value) && value == 31 &&
+               !S8Mali::getGpuProperty(45, value);
+    }
     if (mode == 3) return S8Mali::compositionVerified;
     if (!mode) {
         S8Mali::tick(600); S8Mali::tick(1200);
@@ -135,6 +149,8 @@ def check(elf, scenario, reference):
     if scenario == 'compute-slot2': values[0xc4], values[0xc8] = 1 << 2, 1 << 4
     if scenario == 'busy': values[0x1010] = 1
     if scenario == 'wrong-id': values[0] = 0
+    if scenario == 'gles-capabilities':
+        values.update({0x100: 0x17771777, 0x110: 2, 0x114: 1, 0x120: 0x100001, 0x300: 3})
     jobs = []
     clock = 0
     complete = False
@@ -300,13 +316,18 @@ def check(elf, scenario, reference):
                 uc.hook_add(UC_HOOK_CODE, code, begin=va+i, end=va+i)
     uc.reg_write(UC_ARM64_REG_SP, 0x50fff0)
     uc.reg_write(UC_ARM64_REG_LR, 0x2ff000)
-    mode = {'panel-offset': 2, 'panel-invalid-mapping': 4}.get(scenario, int(is_panel))
+    special = {'panel-offset': 2, 'panel-invalid-mapping': 4, 'gles-capabilities': 5}
+    mode = special.get(scenario, int(is_panel))
     if scenario.startswith('blend-'):
         mode = 3
     uc.reg_write(UC_ARM64_REG_X0, mode)
     uc.emu_start(entry, 0x2ff000, count=10000000)
     assert uc.reg_read(UC_ARM64_REG_PC) == 0x2ff000, (scenario, 'did not terminate')
     result = uc.reg_read(UC_ARM64_REG_X0)
+    if mode == 5:
+        assert result == 1 and jobs == [2, 9, 4, 'rect', 'blend']
+        print(scenario + ': passed')
+        return
     if is_panel:
         expected = {'panel-frames': (3, 2), 'panel-offset': (0, 0),
                     'panel-invalid-mapping': (0, 0),
@@ -358,7 +379,9 @@ def main():
         (work / 'IOKit').mkdir()
         (work / 'IOKit/IOBufferMemoryDescriptor.h').write_text('/* harness stub */\n')
         panel = header.with_name('S8MaliPanel.h')
-        (work / 'check.cpp').write_text(STUB + f'\n#include "{header.as_posix()}"\n#include "{panel.as_posix()}"\n' + ENTRY)
+        caps = header.with_name('S8MaliGlesCaps.h')
+        headers = ''.join(f'\n#include "{f.as_posix()}"' for f in (header, panel, caps))
+        (work / 'check.cpp').write_text(STUB + headers + '\n' + ENTRY)
         elf = work / 'check.elf'
         (work / 'check.ld').write_text('SECTIONS { . = 0x110000; .text : { *(.text*) } .rodata : { *(.rodata*) } .data : { *(.data*) } .bss : { *(.bss*) } }\n')
         subprocess.run(['zig', 'c++', '-target', 'aarch64-freestanding', '-mcpu=cortex_a53',
@@ -373,7 +396,8 @@ def main():
                          'copy-no-store', 'copy-overrun', 'copy-source-damaged', 'rect-wrong-pitch',
                          'rect-tail', 'compute-slot2', 'blend-success', 'blend-math-error',
                          'blend-input-damage', 'blend-boundary', 'panel-frames', 'panel-offset',
-                         'panel-readback-failure', 'panel-flush-timeout', 'panel-invalid-mapping'):
+                         'panel-readback-failure', 'panel-flush-timeout', 'panel-invalid-mapping',
+                         'gles-capabilities'):
             check(data, scenario, reference)
 
 

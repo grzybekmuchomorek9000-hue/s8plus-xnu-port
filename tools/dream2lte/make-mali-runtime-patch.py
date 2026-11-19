@@ -15,13 +15,15 @@ def main():
     after = before
     board = '#if defined(DREAMLTE) && DREAM2LTE_BRINGUP\n'
     for old, new in [
-        ('#include <sys/proc.h>\n', '#include <sys/proc.h>\n#include "S8MaliRuntime.h"\n#include "S8MaliPanel.h"\n'),
+        ('#include <sys/proc.h>\n', '#include <sys/proc.h>\n#include "S8MaliRuntime.h"\n'
+         '#include "S8MaliPanel.h"\n#include "S8MaliGlesCaps.h"\n'),
         ('\tuint64_t      fMinGap;', board + '\tbool          fMaliAutoRate, fMaliFastRate;\n#endif\n\tuint64_t      fMinGap;'),
         ('\tPE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));\n', board +
          '\tfMaliAutoRate = !PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));\n'
          '\tfMaliFastRate = false;\n#else\n\tPE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));\n#endif\n'),
         ('\tfVsync->setTimeoutUS(SWEET_FB_VSYNC_US);\n',
-         board + '\tS8Mali::init();\n\tS8Mali::enablePanel(fPhys, fWidth, fHeight, fRowBytes);\n'
+         board + '\tS8Mali::init();\n\tif (S8Mali::ready) S8Mali::logGlesCaps();\n'
+         '\tS8Mali::enablePanel(fPhys, fWidth, fHeight, fRowBytes);\n'
          '#endif\n\tfVsync->setTimeoutUS(SWEET_FB_VSYNC_US);\n'),
         ('\tuint64_t count = ++fb->fVsyncCount;\n',
          '\tuint64_t count = ++fb->fVsyncCount;\n' + board +
@@ -52,7 +54,7 @@ def main():
         after = after.replace(old, new)
     patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
                                        'a/' + path, 'b/' + path))
-    for name in ('S8MaliRuntime.h', 'S8MaliCopyShader.h', 'S8MaliPanel.h'):
+    for name in ('S8MaliRuntime.h', 'S8MaliCopyShader.h', 'S8MaliPanel.h', 'S8MaliGlesCaps.h'):
         header = (root / 'xnu/dream2lte' / name).read_text()
         patch += ''.join(difflib.unified_diff([], header.splitlines(True), '/dev/null',
                                             'b/iokit/Kernel/arm/' + name))

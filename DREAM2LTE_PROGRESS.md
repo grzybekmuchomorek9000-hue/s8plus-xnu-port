@@ -530,3 +530,9 @@ memory map, GPU, display-panel or touch support has been established.
   all 28 cases, including the Mesa command comparison and three blend
   failure cases. The framebuffer object compiled with the actual XNU
   headers. Blending under XNU on physical hardware is pending.
+- Recovery reports shader mask `0x17771777` for all three job slots.
+  The XNU side now implements read-only Panfrost capability queries and
+  logs the product, revision, job/tiler masks and cache groups. The test
+  covers high bits in 64-bit masks and rejects unsupported indices.
+  G71 BO allocation, job submission from a Mesa context and safe
+  IOSurface sharing remain separate from these capability queries.
