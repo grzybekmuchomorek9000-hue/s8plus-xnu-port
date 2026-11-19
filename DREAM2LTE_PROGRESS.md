@@ -502,3 +502,20 @@ memory map, GPU, display-panel or touch support has been established.
   `9feddd9b9e7136670c3a4a094f5d78404d51fad38db842358e654315f372e25e`.
   Requested iOS boot and a physical Settings scroll followed by return
   to recovery. Hardware compute, frame-copy and scroll results are pending.
+
+## GPU rendering of layers
+
+- The v6 hardware log verified the 16-byte compute copy, the pitched
+  13×7 compute rectangle and all samples from the first three real
+  1440×2960 display frames. The latter each took 32.1–33.2 ms in the
+  presenter. The user reached iOS and still reported severe lag.
+- The SM-G955F recovery's Android driver identifies Mali-G71 r0p0 with
+  20 cores. The iOS framebuffer receives an already-composited BGRA
+  surface from backboardd. The graphics backend has to be brought up
+  upstream of that surface.
+- Added a reproducible ARMv8.0 iOS 16 build of the public Darwin Mesa
+  port and a standalone GLES 3 composition test. It checks two actual
+  draw calls per frame, premultiplied-alpha blending and every pixel in
+  two frames where the overlay moves. A software renderer fails the
+  test. The Mesa client currently needs the matching graphics transport
+  in the S8+ kernel before it can run on the phone.
