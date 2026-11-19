@@ -19,6 +19,7 @@ typedef unsigned long uintptr_t;
 typedef unsigned long vm_offset_t;
 typedef unsigned long vm_size_t;
 typedef unsigned long long IOByteCount;
+typedef unsigned IOOptionBits;
 #define NULL 0
 #define DREAMLTE 1
 #define DREAM2LTE_BRINGUP 1
@@ -88,6 +89,21 @@ struct SweetSurface {
 
 ENTRY = r'''
 extern "C" int entry(unsigned mode) {
+    if (mode == 11) {
+        S8Mali::RenderAddressSpace space{}, foreign{};
+        S8Mali::RenderBuffer front{}, back{}, output{};
+        if (!space.init() || !foreign.init() || !space.allocate(4096, false, front) ||
+            !space.allocate(4096, false, back) || !foreign.allocate(4096, true, output))
+            return 0;
+        bool stopped = true;
+        return !S8Mali::composite(space, front, back, output, 1, 1, 4, 4, 4, stopped) &&
+               !S8Mali::composite(space, front, back, back, 1, 1, 4, 4, 4, stopped) &&
+               !S8Mali::composite(space, front, back, back, 0, 1, 4, 4, 4, stopped) &&
+               !S8Mali::fitsBuffer(front, 2, 1, 4) &&
+               !S8Mali::fitsBuffer(front, 1, 2, 0xfffffffc) &&
+               !S8Mali::fitsBuffer(front, 1, 1, 7) &&
+               S8Mali::fitsBuffer(front, 1, 2, 4092) && stopped;
+    }
     if (mode == 10) {
         S8Mali::RenderAddressSpace first{}, second{};
         S8Mali::RenderBuffer a{}, b{};
@@ -387,7 +403,7 @@ def check(elf, scenario, reference):
     uc.reg_write(UC_ARM64_REG_LR, 0x2ff000)
     special = {'panel-offset': 2, 'panel-invalid-mapping': 4, 'gles-capabilities': 5,
                'render-success': 6, 'render-padding': 6, 'render-flush-timeout': 6,
-               'render-invalid-page': 9, 'render-context-isolation': 10}
+               'render-invalid-page': 9, 'render-context-isolation': 10, 'render-geometry': 11}
     mode = special.get(scenario, int(is_panel))
     if scenario.startswith('blend-'):
         mode = 3
@@ -395,7 +411,7 @@ def check(elf, scenario, reference):
     uc.emu_start(entry, 0x2ff000, count=10000000)
     assert uc.reg_read(UC_ARM64_REG_PC) == 0x2ff000, (scenario, 'did not terminate')
     result = uc.reg_read(UC_ARM64_REG_X0)
-    if mode == 10:
+    if mode in (10, 11):
         assert result == 1 and not jobs
         print(scenario + ': passed')
         return
@@ -484,7 +500,7 @@ def main():
                          'blend-input-damage', 'blend-boundary', 'panel-frames', 'panel-offset',
                          'panel-readback-failure', 'panel-flush-timeout', 'panel-invalid-mapping',
                          'gles-capabilities', 'render-success', 'render-padding', 'render-flush-timeout',
-                         'render-invalid-page', 'render-context-isolation'):
+                         'render-invalid-page', 'render-context-isolation', 'render-geometry'):
             check(data, scenario, reference)
 
 

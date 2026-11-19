@@ -379,6 +379,33 @@ cleanup:
 	return ok && stopped;
 }
 
+static bool fitsBuffer(const RenderBuffer &buffer, unsigned width, unsigned height, unsigned pitch) {
+	return buffer.memory && pitch % 4 == 0 && pitch >= width * 4 &&
+	       (uint64_t)(height - 1) * pitch + width * 4 <= buffer.size;
+}
+
+/* All addresses passed to the GPU come from this address space. The
+ * caller serializes this with the framebuffer and keeps the buffers
+ * alive if stopped becomes false. */
+static bool composite(RenderAddressSpace &space, const RenderBuffer &front, const RenderBuffer &back,
+    const RenderBuffer &output, unsigned width, unsigned height, unsigned frontPitch,
+    unsigned backPitch, unsigned outputPitch, bool &stopped) {
+	if (!space.tables || !width || !height || width > 4096 || height > 4096 ||
+	    front.owner != &space || back.owner != &space || output.owner != &space ||
+	    front.writable || back.writable || !output.writable ||
+	    !fitsBuffer(front, width, height, frontPitch) ||
+	    !fitsBuffer(back, width, height, backPitch) ||
+	    !fitsBuffer(output, width, height, outputPitch)) return false;
+	const Rectangle rect = {front.gpuAddress(), output.gpuAddress(), frontPitch, outputPitch,
+	    width, height, back.gpuAddress(), backPitch};
+	cleanGpuRange(front.cpuAddress(), front.size);
+	cleanGpuRange(back.cpuAddress(), back.size);
+	cleanGpuRange(output.cpuAddress(), output.size);
+	bool done = run(BlendBuffers, 0, &rect, space.physical, &stopped);
+	if (stopped) invalidateGpuRange(output.cpuAddress(), output.size);
+	return done;
+}
+
 /* Exercise the buffer allocator with separate read-only inputs
  * and a writable output, spanning multiple independently wired pages. */
 static bool checkRenderBuffers(bool &stopped) {
@@ -400,13 +427,10 @@ static bool checkRenderBuffers(bool &stopped) {
 			}
 		}
 		for (unsigned i = 0; i < output.size / 4; ++i) outputPixels[i] = POISON;
-		cleanGpuRange(front.cpuAddress(), front.size);
-		cleanGpuRange(back.cpuAddress(), back.size);
-		cleanGpuRange(output.cpuAddress(), output.size);
-		const bool done = run(BlendBuffers, 0, &rect, space.physical, &stopped);
+		const bool done = composite(space, front, back, output, rect.width, rect.height,
+		    rect.srcStride, rect.backgroundStride, rect.dstStride, stopped);
 		unsigned bad = 0;
 		if (done) {
-			invalidateGpuRange(output.cpuAddress(), output.size);
 			for (unsigned i = 0; i < output.size / 4; ++i) {
 				unsigned x, y;
 				unsigned expected = rectCoords(rect.dst + i * 4, rect.dst, rect.dstStride, &rect, x, y)

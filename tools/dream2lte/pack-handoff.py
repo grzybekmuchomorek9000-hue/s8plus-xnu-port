@@ -31,6 +31,8 @@ def main():
                         help='run the opt-in XNU Mali offscreen rendering test (not UI acceleration)')
     parser.add_argument('--mali-present', action='store_true',
                         help='enable G71 full-frame BGRA copies after the compute self-tests')
+    parser.add_argument('--mali-compositor', action='store_true',
+                        help='enable the IOKit service for BGRA composition from an administrator client')
     parser.add_argument('--mali-clear', action='store_true', help='include the loader fragment-clear diagnostic')
     parser.add_argument('--present-hz', type=int, choices=(10, 15, 20, 30, 60),
                         help='set the maximum software framebuffer presentation rate')
@@ -62,6 +64,9 @@ def main():
         parser.error('--mali-runtime requires iOS userland and the runtime-enabled kernel')
     if args.mali_present and (not args.mali_runtime or b'S8 MALI: panel presenter armed' not in kernel.read_bytes()):
         parser.error('--mali-present requires --mali-runtime and a kernel with the panel presenter')
+    if args.mali_compositor and (not args.mali_runtime or
+            b'S8 MALI: S8MaliCompositor IOKit service registered' not in kernel.read_bytes()):
+        parser.error('--mali-compositor requires --mali-runtime and the S8MaliCompositor service')
     boot = files / 'oneui-boot.img'
     stock = boot.read_bytes()
     loader = args.loader or files / 'xnu-handoff-Image'
@@ -100,6 +105,8 @@ def main():
         cmdline += ' s8mali_runtime=1'
     if args.mali_present:
         cmdline += ' s8mali_present=1'
+    if args.mali_compositor:
+        cmdline += ' s8mali_compositor=1'
     if args.present_hz is not None:
         cmdline += f' sweetfb_hz={args.present_hz}'
     with tempfile.TemporaryDirectory() as tmp:

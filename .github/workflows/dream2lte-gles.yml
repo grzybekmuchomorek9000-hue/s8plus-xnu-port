@@ -8,6 +8,7 @@ on:
       - .github/workflows/dream2lte-gles.yml
       - tools/dream2lte/build-gles.sh
       - tools/dream2lte/gles-layer-test.c
+      - tools/dream2lte/mali-compositor-test.c
 
 permissions:
   contents: read

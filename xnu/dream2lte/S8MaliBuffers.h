@@ -13,6 +13,7 @@ struct RenderBuffer {
 	RenderAddressSpace *owner;
 	IOBufferMemoryDescriptor *memory;
 	uint32_t startPage, size;
+	bool writable;
 
 	uint32_t gpuAddress() const { return RenderBase + startPage * PAGE; }
 	uintptr_t cpuAddress() const { return (uintptr_t)memory->getBytesNoCopy(); }
@@ -42,7 +43,8 @@ struct RenderAddressSpace {
 		return true;
 	}
 
-	bool allocate(uint64_t requested, bool writable, RenderBuffer &buffer) {
+	bool allocate(uint64_t requested, bool writable, RenderBuffer &buffer,
+	    IOOptionBits options = 0) {
 		if (!tables || buffer.memory || !requested ||
 		    requested > (uint64_t)(RenderPageCount - 2) * PAGE) return false;
 		unsigned pages = (unsigned)((requested + PAGE - 1) / PAGE);
@@ -57,7 +59,7 @@ struct RenderAddressSpace {
 		if (found == RenderPageCount) return false;
 		unsigned size = pages * PAGE;
 		IOBufferMemoryDescriptor *memory = IOBufferMemoryDescriptor::inTaskWithOptions(
-		    kernel_task, kIODirectionInOut, size, PAGE);
+		    kernel_task, kIODirectionInOut | options, size, PAGE);
 		if (!memory) return false;
 		uintptr_t cpu = (uintptr_t)memory->getBytesNoCopy();
 		if (!cpu || cpu % PAGE || memory->getLength() < size ||
@@ -68,7 +70,7 @@ struct RenderAddressSpace {
 			return false;
 		}
 		bzero((void *)cpu, size);
-		buffer = {this, memory, found, size};
+		buffer = {this, memory, found, size, writable};
 		return true;
 	}
 

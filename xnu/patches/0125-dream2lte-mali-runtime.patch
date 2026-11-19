@@ -1,16 +1,17 @@
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -51,6 +51,9 @@
+@@ -51,6 +51,10 @@
  #include <pexpert/arm64/board_config.h>
  #include <kern/clock.h>
  #include <sys/proc.h>
 +#include "S8MaliRuntime.h"
 +#include "S8MaliPanel.h"
 +#include "S8MaliGlesCaps.h"
++#include "S8MaliCompositor.h"
  
  enum {
  	kSweetFBGetLayerDefaultSurface  = 3,
-@@ -123,6 +126,9 @@
+@@ -123,6 +127,9 @@
  	uint32_t      fFadeStep;      /* fade-out steps done while off */
  	IOLock       *fPresentLock;   /* one panel copy at a time */
  	uint64_t      fLastPresent;   /* mach_absolute_time of the last copy */
@@ -20,7 +21,7 @@
  	uint64_t      fMinGap;        /* 1/hz in timebase ticks */
  
  	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
-@@ -218,13 +224,23 @@
+@@ -218,13 +225,24 @@
  		return false;
  	}
  	uint32_t hz = 10;
@@ -40,11 +41,12 @@
 +	S8Mali::init();
 +	if (S8Mali::ready) S8Mali::logGlesCaps();
 +	S8Mali::enablePanel(fPhys, fWidth, fHeight, fRowBytes);
++	sweet_mali_publish_compositor(this, fPresentLock);
 +#endif
  	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
  
  	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
-@@ -242,6 +258,13 @@
+@@ -242,6 +260,13 @@
  	AppleCLCD *fb = (AppleCLCD *)owner;
  	uint64_t now = mach_absolute_time();
  	uint64_t count = ++fb->fVsyncCount;
@@ -58,7 +60,7 @@
  	uint64_t values[6] = {
  		(uint32_t)count, (uint32_t)(count >> 32),
  		(uint32_t)now, (uint32_t)(now >> 32),
-@@ -262,12 +285,19 @@
+@@ -262,12 +287,19 @@
  		}
  		IOLockUnlock(fb->fLock);
  		if (step <= 6) {
@@ -78,7 +80,7 @@
  		}
  		sender->setTimeoutUS(SWEET_FB_VSYNC_US);
  		return;
-@@ -381,6 +411,9 @@
+@@ -381,6 +413,9 @@
  AppleCLCD::present(const uint8_t *rec)
  {
  	uint32_t mask = get32(rec, 0x104);
@@ -88,7 +90,7 @@
  	IOLockLock(fPresentLock);
  #if defined(DREAMLTE)
  	sweet_fb_wait_frame_done();
-@@ -468,6 +501,14 @@
+@@ -468,6 +503,14 @@
  			src = 0;
  		}
  		if (src != 0 && bpe == 4) {
@@ -103,7 +105,7 @@
  			for (int32_t y = 0; y < h; y++) {
  				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
  				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
-@@ -476,6 +517,21 @@
+@@ -476,6 +519,21 @@
  		}
  		s->release();
  	}
@@ -127,7 +129,7 @@
  
 --- /dev/null
 +++ b/iokit/Kernel/arm/S8MaliRuntime.h
-@@ -0,0 +1,479 @@
+@@ -0,0 +1,503 @@
 +/* SPDX-License-Identifier: GPL-2.0-only
 + * Opt-in Mali-G71 runtime bring-up for dream2lte. Not an IOAccelerator.
 + * Register/LPAE definitions: Linux Panfrost 141b164bbe18.
@@ -509,6 +511,33 @@
 +	return ok && stopped;
 +}
 +
++static bool fitsBuffer(const RenderBuffer &buffer, unsigned width, unsigned height, unsigned pitch) {
++	return buffer.memory && pitch % 4 == 0 && pitch >= width * 4 &&
++	       (uint64_t)(height - 1) * pitch + width * 4 <= buffer.size;
++}
++
++/* All addresses passed to the GPU come from this address space. The
++ * caller serializes this with the framebuffer and keeps the buffers
++ * alive if stopped becomes false. */
++static bool composite(RenderAddressSpace &space, const RenderBuffer &front, const RenderBuffer &back,
++    const RenderBuffer &output, unsigned width, unsigned height, unsigned frontPitch,
++    unsigned backPitch, unsigned outputPitch, bool &stopped) {
++	if (!space.tables || !width || !height || width > 4096 || height > 4096 ||
++	    front.owner != &space || back.owner != &space || output.owner != &space ||
++	    front.writable || back.writable || !output.writable ||
++	    !fitsBuffer(front, width, height, frontPitch) ||
++	    !fitsBuffer(back, width, height, backPitch) ||
++	    !fitsBuffer(output, width, height, outputPitch)) return false;
++	const Rectangle rect = {front.gpuAddress(), output.gpuAddress(), frontPitch, outputPitch,
++	    width, height, back.gpuAddress(), backPitch};
++	cleanGpuRange(front.cpuAddress(), front.size);
++	cleanGpuRange(back.cpuAddress(), back.size);
++	cleanGpuRange(output.cpuAddress(), output.size);
++	bool done = run(BlendBuffers, 0, &rect, space.physical, &stopped);
++	if (stopped) invalidateGpuRange(output.cpuAddress(), output.size);
++	return done;
++}
++
 +/* Exercise the buffer allocator with separate read-only inputs
 + * and a writable output, spanning multiple independently wired pages. */
 +static bool checkRenderBuffers(bool &stopped) {
@@ -530,13 +559,10 @@
 +			}
 +		}
 +		for (unsigned i = 0; i < output.size / 4; ++i) outputPixels[i] = POISON;
-+		cleanGpuRange(front.cpuAddress(), front.size);
-+		cleanGpuRange(back.cpuAddress(), back.size);
-+		cleanGpuRange(output.cpuAddress(), output.size);
-+		const bool done = run(BlendBuffers, 0, &rect, space.physical, &stopped);
++		const bool done = composite(space, front, back, output, rect.width, rect.height,
++		    rect.srcStride, rect.backgroundStride, rect.dstStride, stopped);
 +		unsigned bad = 0;
 +		if (done) {
-+			invalidateGpuRange(output.cpuAddress(), output.size);
 +			for (unsigned i = 0; i < output.size / 4; ++i) {
 +				unsigned x, y;
 +				unsigned expected = rectCoords(rect.dst + i * 4, rect.dst, rect.dstStride, &rect, x, y)
@@ -904,7 +930,7 @@
 +#endif
 --- /dev/null
 +++ b/iokit/Kernel/arm/S8MaliBuffers.h
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,106 @@
 +/* SPDX-License-Identifier: GPL-2.0-only
 + * GPU address allocation for XNU-owned render buffers. The job runner
 + * may attach a context's leaves only while it exclusively owns the GPU.
@@ -920,6 +946,7 @@
 +	RenderAddressSpace *owner;
 +	IOBufferMemoryDescriptor *memory;
 +	uint32_t startPage, size;
++	bool writable;
 +
 +	uint32_t gpuAddress() const { return RenderBase + startPage * PAGE; }
 +	uintptr_t cpuAddress() const { return (uintptr_t)memory->getBytesNoCopy(); }
@@ -949,7 +976,8 @@
 +		return true;
 +	}
 +
-+	bool allocate(uint64_t requested, bool writable, RenderBuffer &buffer) {
++	bool allocate(uint64_t requested, bool writable, RenderBuffer &buffer,
++	    IOOptionBits options = 0) {
 +		if (!tables || buffer.memory || !requested ||
 +		    requested > (uint64_t)(RenderPageCount - 2) * PAGE) return false;
 +		unsigned pages = (unsigned)((requested + PAGE - 1) / PAGE);
@@ -964,7 +992,7 @@
 +		if (found == RenderPageCount) return false;
 +		unsigned size = pages * PAGE;
 +		IOBufferMemoryDescriptor *memory = IOBufferMemoryDescriptor::inTaskWithOptions(
-+		    kernel_task, kIODirectionInOut, size, PAGE);
++		    kernel_task, kIODirectionInOut | options, size, PAGE);
 +		if (!memory) return false;
 +		uintptr_t cpu = (uintptr_t)memory->getBytesNoCopy();
 +		if (!cpu || cpu % PAGE || memory->getLength() < size ||
@@ -975,7 +1003,7 @@
 +			return false;
 +		}
 +		bzero((void *)cpu, size);
-+		buffer = {this, memory, found, size};
++		buffer = {this, memory, found, size, writable};
 +		return true;
 +	}
 +
@@ -1008,4 +1036,236 @@
 +	}
 +};
 +} /* namespace S8Mali */
++#endif
+--- /dev/null
++++ b/iokit/Kernel/arm/S8MaliCompositor.h
+@@ -0,0 +1,229 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Opt-in IOKit interface for premultiplied BGRA source-over. A client
++ * can only submit geometry and handles allocated on its own connection.
++ */
++#if defined(DREAMLTE) && DREAM2LTE_BRINGUP
++class S8MaliCompositor : public IOService {
++	OSDeclareDefaultStructors(S8MaliCompositor);
++public:
++	IOLock *hardwareLock;
++	IOReturn newUserClient(task_t owningTask, void *securityID, UInt32 type,
++	    OSDictionary *properties, IOUserClient **handler) APPLE_KEXT_OVERRIDE;
++};
++OSDefineMetaClassAndStructors(S8MaliCompositor, IOService);
++
++class S8MaliCompositorClient : public IOUserClient {
++	OSDeclareDefaultStructors(S8MaliCompositorClient);
++	enum { BufferCount = 24 };
++	struct Slot {
++		S8Mali::RenderBuffer buffer;
++		IOMemoryMap *mapping;
++	};
++
++	task_t fTask;
++	IOLock *fLock;
++	S8MaliCompositor *fProvider;
++	S8Mali::RenderAddressSpace fSpace;
++	Slot fSlots[BufferCount];
++	bool fClosed, fPinned;
++	Slot *lookup(uint64_t handle);
++	void releaseResources();
++	IOReturn execute(uint32_t selector, const uint64_t *input, uint64_t *output);
++
++public:
++	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++	void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
++	void free() APPLE_KEXT_OVERRIDE;
++	IOReturn clientClose() APPLE_KEXT_OVERRIDE;
++	IOReturn externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++	    IOExternalMethodDispatch *dispatch, OSObject *target, void *reference) APPLE_KEXT_OVERRIDE;
++};
++OSDefineMetaClassAndStructors(S8MaliCompositorClient, IOUserClient);
++
++IOReturn S8MaliCompositor::newUserClient(task_t task, void *securityID, UInt32 type,
++    __unused OSDictionary *properties, IOUserClient **handler)
++{
++	*handler = NULL;
++	if (type != 0) return kIOReturnUnsupported;
++	if (IOUserClient::clientHasPrivilege((void *)task, kIOClientPrivilegeAdministrator) != kIOReturnSuccess)
++		return kIOReturnNotPrivileged;
++	S8MaliCompositorClient *client = new S8MaliCompositorClient;
++	if (!client) return kIOReturnNoMemory;
++	if (!client->initWithTask(task, securityID, type) || !client->attach(this)) {
++		client->release();
++		return kIOReturnNoResources;
++	}
++	if (!client->start(this)) {
++		client->detach(this);
++		client->release();
++		return kIOReturnBusy;
++	}
++	*handler = client;
++	return kIOReturnSuccess;
++}
++
++bool S8MaliCompositorClient::initWithTask(task_t task, void *securityID, UInt32 type)
++{
++	if (!IOUserClient::initWithTask(task, securityID, type)) return false;
++	fTask = task;
++	fLock = IOLockAlloc();
++	return fLock != NULL;
++}
++
++bool S8MaliCompositorClient::start(IOService *provider)
++{
++	S8MaliCompositor *gpu = OSDynamicCast(S8MaliCompositor, provider);
++	if (!gpu || !IOUserClient::start(provider) || !gpu->open(this)) return false;
++	IOLockLock(gpu->hardwareLock);
++	bool ready = S8Mali::ready;
++	IOLockUnlock(gpu->hardwareLock);
++	if (!ready || !fSpace.init()) {
++		gpu->close(this);
++		return false;
++	}
++	fProvider = gpu;
++	return true;
++}
++
++void S8MaliCompositorClient::stop(IOService *provider)
++{
++	IOLockLock(fLock);
++	fClosed = true;
++	releaseResources();
++	if (fProvider) {
++		fProvider->close(this);
++		fProvider = NULL;
++	}
++	IOLockUnlock(fLock);
++	IOUserClient::stop(provider);
++}
++
++IOReturn S8MaliCompositorClient::clientClose()
++{
++	IOLockLock(fLock);
++	fClosed = true;
++	IOLockUnlock(fLock);
++	terminate();
++	return kIOReturnSuccess;
++}
++
++void S8MaliCompositorClient::releaseResources()
++{
++	for (Slot &slot : fSlots) {
++		OSSafeReleaseNULL(slot.mapping);
++		if (!fPinned) fSpace.release(slot.buffer);
++	}
++	/* A hardware timeout quarantines mappings used by the last job until
++	 * reboot. CPU mappings are removed even when the DMA memory is pinned. */
++	if (!fPinned) OSSafeReleaseNULL(fSpace.tables);
++}
++
++void S8MaliCompositorClient::free()
++{
++	releaseResources();
++	if (fLock) IOLockFree(fLock);
++	IOUserClient::free();
++}
++
++S8MaliCompositorClient::Slot *S8MaliCompositorClient::lookup(uint64_t handle)
++{
++	if (!handle || handle > BufferCount) return NULL;
++	Slot &slot = fSlots[handle - 1];
++	return slot.buffer.memory ? &slot : NULL;
++}
++
++IOReturn S8MaliCompositorClient::execute(uint32_t selector, const uint64_t *in, uint64_t *out)
++{
++	switch (selector) {
++	case 0: /* Version, maximum single allocation, number of handles. */
++		out[0] = 1;
++		out[1] = (S8Mali::RenderPageCount - 2) * S8Mali::PAGE;
++		out[2] = BufferCount;
++		return kIOReturnSuccess;
++	case 1: { /* Allocate and map a CPU buffer on the owning task. */
++		if (!in[0] || in[0] > (S8Mali::RenderPageCount - 2) * S8Mali::PAGE || in[1] > 1)
++			return kIOReturnBadArgument;
++		for (unsigned index = 0; index < BufferCount; ++index) {
++			Slot &slot = fSlots[index];
++			if (slot.buffer.memory) continue;
++			if (!fSpace.allocate(in[0], in[1] == 1, slot.buffer, kIOMemoryKernelUserShared))
++				return kIOReturnNoMemory;
++			slot.mapping = slot.buffer.memory->createMappingInTask(fTask, 0, kIOMapAnywhere);
++			if (!slot.mapping) {
++				fSpace.release(slot.buffer);
++				return kIOReturnNoMemory;
++			}
++			out[0] = index + 1;
++			out[1] = slot.mapping->getAddress();
++			out[2] = slot.buffer.size;
++			return kIOReturnSuccess;
++		}
++		return kIOReturnNoResources;
++	}
++	case 2: {
++		Slot *slot = lookup(in[0]);
++		if (!slot) return kIOReturnBadArgument;
++		OSSafeReleaseNULL(slot->mapping);
++		fSpace.release(slot->buffer);
++		return kIOReturnSuccess;
++	}
++	case 3: { /* Compose front over back into output. Row pitches in bytes. */
++		Slot *front = lookup(in[0]), *back = lookup(in[1]), *output = lookup(in[2]);
++		if (!front || !back || !output) return kIOReturnBadArgument;
++		for (unsigned i = 3; i < 8; ++i)
++			if (in[i] > 0xffffffffu) return kIOReturnBadArgument;
++		IOLockLock(fProvider->hardwareLock);
++		bool stopped = true;
++		bool done = S8Mali::ready &&
++		    S8Mali::composite(fSpace, front->buffer, back->buffer, output->buffer,
++		        (unsigned)in[3], (unsigned)in[4], (unsigned)in[5], (unsigned)in[6],
++		        (unsigned)in[7], stopped);
++		if (!stopped) {
++			fPinned = true;
++			S8Mali::ready = false;
++		}
++		IOLockUnlock(fProvider->hardwareLock);
++		return done ? kIOReturnSuccess : kIOReturnNotReady;
++	}
++	default:
++		return kIOReturnUnsupported;
++	}
++}
++
++IOReturn S8MaliCompositorClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
++    __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target, __unused void *reference)
++{
++	static const unsigned inputs[] = {0, 2, 1, 8};
++	static const unsigned outputs[] = {3, 3, 0, 0};
++	if (current_task() != fTask) return kIOReturnNotPrivileged;
++	if (selector >= sizeof(inputs) / sizeof(inputs[0])) return kIOReturnUnsupported;
++	if (args->scalarInputCount != inputs[selector] || args->scalarOutputCount != outputs[selector] ||
++	    args->structureInputSize || args->structureOutputSize || args->asyncReference)
++		return kIOReturnBadArgument;
++	IOLockLock(fLock);
++	IOReturn result = fClosed || fPinned || !fProvider ? kIOReturnNotReady :
++	    execute(selector, args->scalarInput, args->scalarOutput);
++	IOLockUnlock(fLock);
++	return result;
++}
++
++static void sweet_mali_publish_compositor(IOService *parent, IOLock *hardwareLock)
++{
++	int enabled = 0;
++	if (!S8Mali::ready || !S8Mali::compositionVerified ||
++	    !PE_parse_boot_argn("s8mali_compositor", &enabled, sizeof(enabled)) || enabled != 1) return;
++	S8MaliCompositor *service = new S8MaliCompositor;
++	if (!service) return;
++	if (service->init() && service->attach(parent)) {
++		service->hardwareLock = hardwareLock;
++		if (service->start(parent)) {
++			service->registerService();
++			IOLog("S8 MALI: S8MaliCompositor IOKit service registered\n");
++		} else {
++			service->detach(parent);
++		}
++	}
++	service->release();
++}
 +#endif

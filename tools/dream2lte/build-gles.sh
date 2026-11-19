@@ -55,6 +55,12 @@ codesign --force --sign - "$out/gles-layer-test"
 codesign --verify --strict "$out/gles-layer-test"
 xcrun vtool -show-build "$out/gles-layer-test"
 xcrun otool -L "$out/gles-layer-test"
+xcrun --sdk iphoneos clang -arch arm64 -mcpu=cortex-a53 -miphoneos-version-min=16.0 \
+  -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -std=c11 -Wall -Wextra -Werror -O2 \
+  "$here/mali-compositor-test.c" -framework CoreFoundation -framework IOKit -o "$out/mali-compositor-test"
+codesign --force --sign - "$out/mali-compositor-test"
+codesign --verify --strict "$out/mali-compositor-test"
+xcrun vtool -show-build "$out/mali-compositor-test"
 printf '%s\n' "$donor_rev" > "$out/mesa-transport-revision.txt"
 cp "$work/donor/gpu/hakios-gl/LICENSE.hakios" "$out/LICENSE.hakios"
-(cd "$out" && shasum -a 256 gles-layer-test lib/*.dylib > SHA256SUMS)
+(cd "$out" && shasum -a 256 gles-layer-test mali-compositor-test lib/*.dylib > SHA256SUMS)

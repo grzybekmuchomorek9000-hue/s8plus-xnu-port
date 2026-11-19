@@ -576,3 +576,18 @@ memory map, GPU, display-panel or touch support has been established.
   The full BOOT readback matched
   `4854f2295e04b58c6062bd4379c4b6cf0f102c391a94f9e2ac1edf985a8290dd`.
   Requested iOS boot and return to TWRP for the separate-buffer result.
+- Recovered the v8 log. The hardware composited into the third buffer
+  in 32 μs with verified pixels, unchanged padding, zero MMU faults
+  and successful cleanup. The capability reader reported 20 shader
+  cores (`0x17771777`), one tiler and three job slots.
+- Added an opt-in administrator-only `S8MaliCompositor` service. It
+  gives one client per-connection CPU mappings and runs the fixed
+  BGRA source-over operation through the same buffer allocator and
+  serialized hardware submission as the verified kernel test.
+  The client supplies handles, dimensions and pitches. The kernel
+  constructs GPU addresses and pins DMA allocations on cleanup failure.
+- The user-mode probe requests a 128×96 composite and independently
+  checks 12,288 pixels and padding. The 35-case driver model and
+  XNU object build pass. TWRP lacks an HFS+ filesystem driver. The
+  probe still needs a launch path in the active iOS installation.
+  Mesa job submission and Core Animation integration are pending.
