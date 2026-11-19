@@ -564,3 +564,15 @@ memory map, GPU, display-panel or touch support has been established.
   34th model case use the same GPU virtual address, with independent
   physical pages and page tables. A context cannot release the other
   context's buffer. The XNU object compiles with the added checks.
+- Recovery confirmed GPU interrupt IDs 92 (job), 93 (MMU) and 91 (GPU).
+  The running framebuffer uses polled completion. Asynchronous Mesa
+  submission will need a GIC handler before it can wait without spinning.
+- Device build `44553841311` at `9e6d95b` succeeded. The linked kernel
+  SHA-256 is `56ef29bfd0e169971d1c47bd70d4d919b067df1dbec7d13a95d0956410124228`.
+  It contains the capability reader and separate-buffer diagnostic. The
+  later cross-context release check remains tested in the host model.
+- Wrote `s8plus-ios-mali-layer-v8-boot.img` (SHA-256
+  `de44e15ed3c12f4142bad8a1af7be3598345c8bf24956f6721b4f6540e13ccaf`).
+  The full BOOT readback matched
+  `4854f2295e04b58c6062bd4379c4b6cf0f102c391a94f9e2ac1edf985a8290dd`.
+  Requested iOS boot and return to TWRP for the separate-buffer result.
