@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
- * Offline compiler fixture for a single-invocation G71 memory-copy shader.
- * GPU VAs refer to the driver's private mapped test page, not CPU addresses.
+ * Compile fixed G71 operations against Mesa's Bifrost backend.
+ * GPU addresses are assigned by the driver within its own page tables.
  */
 #include <stdio.h>
 #include <string.h>
@@ -11,16 +11,35 @@
 #include "panfrost/lib/pan_shader.h"
 #include "util/u_dynarray.h"
 
-/* The driver owns the six-word parameter block at 0x1700. One lane moves
- * one BGRA pixel. Bounds cover partial workgroups at the right/bottom. */
-static void emit_rectangle(nir_builder *b)
+/* Premultiplied 8-bit BGRA source-over. The multiply and shift implement
+ * round(channel * (255 - source_alpha) / 255) for products up to 65025. */
+static nir_def *source_over(nir_builder *b, nir_def *source, nir_def *below)
+{
+   nir_def *alpha = nir_ushr_imm(b, source, 24);
+   nir_def *inverse = nir_isub(b, nir_imm_int(b, 255), alpha);
+   nir_def *packed = nir_imm_int(b, 0);
+   for (unsigned shift = 0; shift < 32; shift += 8) {
+      nir_def *front = nir_iand_imm(b, nir_ushr_imm(b, source, shift), 255);
+      nir_def *back = nir_iand_imm(b, nir_ushr_imm(b, below, shift), 255);
+      nir_def *product = nir_iadd_imm(b, nir_imul(b, back, inverse), 128);
+      nir_def *scaled = nir_ushr_imm(b, nir_iadd(b, product, nir_ushr_imm(b, product, 8)), 8);
+      nir_def *sum = nir_umin(b, nir_iadd(b, front, scaled), nir_imm_int(b, 255));
+      packed = nir_ior(b, packed, nir_ishl_imm(b, sum, shift));
+   }
+   return packed;
+}
+
+/* The driver owns the parameter block at 0x1700. Each lane handles one
+ * pixel and checks the dimensions at partial workgroups. */
+static void emit_rectangle(nir_builder *b, bool blend)
 {
    b->shader->info.workgroup_size[0] = 8;
    b->shader->info.workgroup_size[1] = 4;
    nir_def *xy = nir_load_global_invocation_id(b, 32);
    nir_def *x = nir_channel(b, xy, 0), *y = nir_channel(b, xy, 1);
    nir_def *layout = nir_load_global(b, 4, 32, nir_imm_int64(b, 0x1700), .align_mul = 16);
-   nir_def *extent = nir_load_global(b, 2, 32, nir_imm_int64(b, 0x1710), .align_mul = 8);
+   nir_def *extent = nir_load_global(b, blend ? 4 : 2, 32,
+                                    nir_imm_int64(b, 0x1710), .align_mul = 8);
    nir_if *inside = nir_push_if(b, nir_iand(b, nir_ult(b, x, nir_channel(b, extent, 0)),
                                                nir_ult(b, y, nir_channel(b, extent, 1))));
    nir_def *column = nir_imul_imm(b, x, 4);
@@ -29,6 +48,12 @@ static void emit_rectangle(nir_builder *b)
    nir_def *dst = nir_iadd(b, nir_channel(b, layout, 1),
                            nir_iadd(b, column, nir_imul(b, y, nir_channel(b, layout, 3))));
    nir_def *pixel = nir_load_global(b, 1, 32, nir_u2u64(b, src), .align_mul = 4);
+   if (blend) {
+      nir_def *below_offset = nir_iadd(b, column, nir_imul(b, y, nir_channel(b, extent, 3)));
+      nir_def *below_addr = nir_iadd(b, nir_channel(b, extent, 2), below_offset);
+      nir_def *below = nir_load_global(b, 1, 32, nir_u2u64(b, below_addr), .align_mul = 4);
+      pixel = source_over(b, pixel, below);
+   }
    nir_store_global(b, pixel, nir_u2u64(b, dst), .align_mul = 4, .write_mask = 1);
    nir_pop_if(b, inside);
 }
@@ -67,9 +92,10 @@ static bool reference(FILE *f, struct pan_shader_info *info, unsigned w, unsigne
 
 int main(int argc, char **argv)
 {
-   bool rectangle = argc >= 3 && !strcmp(argv[2], "rectangle");
+   bool blend = argc >= 3 && !strcmp(argv[2], "blend");
+   bool rectangle = blend || (argc >= 3 && !strcmp(argv[2], "rectangle"));
    if (argc < 2 || argc > 4 || (argc >= 3 && !rectangle && strcmp(argv[2], "copy16"))) {
-      fprintf(stderr, "usage: %s OUTPUT.bin [copy16|rectangle [reference.bin]]\n", argv[0]);
+      fprintf(stderr, "usage: %s OUTPUT.bin [copy16|rectangle|blend [reference.bin]]\n", argv[0]);
       return 2;
    }
    glsl_type_singleton_init_or_ref();
@@ -81,7 +107,7 @@ int main(int argc, char **argv)
    for (unsigned i = 0; i < 3; ++i)
       builder.shader->info.workgroup_size[i] = 1;
    if (rectangle) {
-      emit_rectangle(&builder);
+      emit_rectangle(&builder, blend);
    } else {
       nir_def *source = nir_imm_int64(&builder, 0x2000);
       nir_def *destination = nir_imm_int64(&builder, 0x2200);
