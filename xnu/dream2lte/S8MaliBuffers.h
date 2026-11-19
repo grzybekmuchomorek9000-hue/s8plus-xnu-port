@@ -7,7 +7,10 @@ namespace S8Mali {
 enum { RenderBase = 0x02000000, RenderLeafCount = 32, LeafEntries = PAGE / 8,
        RenderPageCount = RenderLeafCount * LeafEntries, RenderTableBytes = RenderLeafCount * PAGE };
 
+struct RenderAddressSpace;
+
 struct RenderBuffer {
+	RenderAddressSpace *owner;
 	IOBufferMemoryDescriptor *memory;
 	uint32_t startPage, size;
 
@@ -21,6 +24,7 @@ struct RenderAddressSpace {
 	uint64_t physical;
 
 	bool init() {
+		if (tables) return false;
 		tables = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
 		    kIODirectionInOut | kIOMemoryPhysicallyContiguous, RenderTableBytes, PAGE);
 		if (!tables) return false;
@@ -64,18 +68,19 @@ struct RenderAddressSpace {
 			return false;
 		}
 		bzero((void *)cpu, size);
-		buffer = {memory, found, size};
+		buffer = {this, memory, found, size};
 		return true;
 	}
 
 	/* Call only after the job runner has retired GPU translations. */
-	void release(RenderBuffer &buffer) {
-		if (!buffer.memory) return;
+	bool release(RenderBuffer &buffer) {
+		if (!buffer.memory || buffer.owner != this) return false;
 		unsigned bytes = (buffer.size / PAGE) * sizeof(*leaves);
 		bzero(leaves + buffer.startPage, bytes);
 		cleanGpuRange((uintptr_t)(leaves + buffer.startPage), bytes);
 		buffer.memory->release();
 		buffer = {};
+		return true;
 	}
 
 private:

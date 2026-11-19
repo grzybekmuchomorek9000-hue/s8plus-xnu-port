@@ -43,21 +43,22 @@ class IOBufferMemoryDescriptor {
 public:
     unsigned region;
     static IOBufferMemoryDescriptor *inTaskWithOptions(void *, unsigned options, unsigned size, unsigned) {
-        static IOBufferMemoryDescriptor runtime{0}, panel{1}, tables{5}, render[3] = {{6},{7},{8}};
-        static unsigned allocated;
+        static IOBufferMemoryDescriptor runtime{0}, panel{1}, tables[2] = {{5},{9}}, render[3] = {{6},{7},{8}};
+        static unsigned allocated, tableCount;
         if (!(options & kIOMemoryPhysicallyContiguous))
             return allocated < 3 ? &render[allocated++] : NULL;
         if (size == 7 * 4096) return &runtime;
-        return size == 32 * 4096 ? &tables : &panel;
+        if (size == 32 * 4096) return tableCount < 2 ? &tables[tableCount++] : NULL;
+        return &panel;
     }
     uint64_t getPhysicalSegment(unsigned off, IOByteCount *n, unsigned = 0) {
         if (region < 2) {
             *n = (region ? 18 : 7) * 4096;
             return region ? 0x880200000ULL : 0x880100000ULL;
         }
-        if (region == 5) {
+        if (region == 5 || region == 9) {
             *n = 32 * 4096;
-            return 0x880300000ULL;
+            return region == 5 ? 0x880300000ULL : 0x880340000ULL;
         }
         *n = 4096;
         if (region >= 6) {
@@ -69,6 +70,7 @@ public:
     }
     void *getBytesNoCopy() {
         if (region == 5) return (void *)(uintptr_t)0x41000000;
+        if (region == 9) return (void *)(uintptr_t)0x41040000;
         if (region >= 6) return (void *)(uintptr_t)(0x42000000 + ((region - 6) << 20));
         return (void *)(uintptr_t)(0x40000000 + (region == 1 ? 0x10000 : region * 0x2000000));
     }
@@ -86,6 +88,20 @@ struct SweetSurface {
 
 ENTRY = r'''
 extern "C" int entry(unsigned mode) {
+    if (mode == 10) {
+        S8Mali::RenderAddressSpace first{}, second{};
+        S8Mali::RenderBuffer a{}, b{};
+        if (!first.init() || first.init() || !second.init() ||
+            !first.allocate(7 * 4096, false, a) || !second.allocate(7 * 4096, true, b) ||
+            first.physical == second.physical || a.gpuAddress() != b.gpuAddress() ||
+            a.cpuAddress() == b.cpuAddress() || second.release(a) ||
+            !first.leaves[a.startPage] || !second.leaves[b.startPage])
+            return 0;
+        unsigned page = a.startPage;
+        if (!first.release(a) || first.leaves[page] || !second.leaves[page])
+            return 0;
+        return second.release(b) && !second.leaves[page];
+    }
     invalidRenderPage = mode == 9;
     S8Mali::init();
     if (mode == 5) {
@@ -151,6 +167,7 @@ def check(elf, scenario, reference):
     uc.mem_map(0x16484000, 4096)
     uc.mem_map(cpu, 0x10000)
     uc.mem_map(0x41000000, 32 * 4096)
+    uc.mem_map(0x41040000, 32 * 4096)
     for base in (0x42000000, 0x42100000, 0x42200000):
         uc.mem_map(base, 7 * 4096)
     is_panel = scenario.startswith('panel-')
@@ -370,7 +387,7 @@ def check(elf, scenario, reference):
     uc.reg_write(UC_ARM64_REG_LR, 0x2ff000)
     special = {'panel-offset': 2, 'panel-invalid-mapping': 4, 'gles-capabilities': 5,
                'render-success': 6, 'render-padding': 6, 'render-flush-timeout': 6,
-               'render-invalid-page': 9}
+               'render-invalid-page': 9, 'render-context-isolation': 10}
     mode = special.get(scenario, int(is_panel))
     if scenario.startswith('blend-'):
         mode = 3
@@ -378,6 +395,10 @@ def check(elf, scenario, reference):
     uc.emu_start(entry, 0x2ff000, count=10000000)
     assert uc.reg_read(UC_ARM64_REG_PC) == 0x2ff000, (scenario, 'did not terminate')
     result = uc.reg_read(UC_ARM64_REG_X0)
+    if mode == 10:
+        assert result == 1 and not jobs
+        print(scenario + ': passed')
+        return
     if mode == 5:
         assert result == 1 and jobs == [2, 9, 4, 'rect', 'blend', 'render']
         print(scenario + ': passed')
@@ -463,7 +484,7 @@ def main():
                          'blend-input-damage', 'blend-boundary', 'panel-frames', 'panel-offset',
                          'panel-readback-failure', 'panel-flush-timeout', 'panel-invalid-mapping',
                          'gles-capabilities', 'render-success', 'render-padding', 'render-flush-timeout',
-                         'render-invalid-page'):
+                         'render-invalid-page', 'render-context-isolation'):
             check(data, scenario, reference)
 
 

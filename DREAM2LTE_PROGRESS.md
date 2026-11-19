@@ -560,3 +560,7 @@ memory map, GPU, display-panel or touch support has been established.
   framebuffer with XNU headers. The new cases cover all GPU pages and
   permissions, output padding, rollback on a bad physical page and keeping
   the backing allocations alive when the MMU does not retire them.
+- Added ownership checks for buffer release. Both address spaces in the
+  34th model case use the same GPU virtual address, with independent
+  physical pages and page tables. A context cannot release the other
+  context's buffer. The XNU object compiles with the added checks.
