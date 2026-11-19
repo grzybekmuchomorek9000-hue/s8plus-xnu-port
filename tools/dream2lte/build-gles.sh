@@ -43,7 +43,9 @@ assert source.count(inline) == 1 and source.count(cross) == 6
 source = source.replace(inline, 'clang -arch arm64 -mcpu=cortex-a53 -miphoneos-version-min=')
 script.write_text(source.replace(cross, "'-mcpu=cortex-a53', " + cross))
 PY
-MESA_TAG=mesa-25.0.7 LIBDRM_TAG=libdrm-2.4.124 bash "$mesa_build" "$work/build" "$out"
+MESA_TAG=mesa-25.0.7 LIBDRM_TAG=libdrm-2.4.124 bash "$mesa_build" "$work/build" "$work/stage"
+mkdir -p "$out/lib"
+cp "$work/stage/lib/"*.dylib "$out/lib/"
 
 xcrun --sdk iphoneos clang -arch arm64 -mcpu=cortex-a53 -miphoneos-version-min=16.0 \
   -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -std=c11 -Wall -Wextra -Werror -O2 \
