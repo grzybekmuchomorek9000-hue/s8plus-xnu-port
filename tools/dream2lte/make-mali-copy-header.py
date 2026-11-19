@@ -35,6 +35,8 @@ def main():
                    'f69885686735ce54ee3b49bb9e6537c22d6ce42ee2765281ef254d71508ca59b')
     text += shader(args.artifact, 'g71-rectangle', 's8_mali_rectangle_shader', 304, '0x3000000000000000',
                    '819ab9b35721fecc1513f742ffe54062eb920e589e28356c1c2f35ed80ff3fd0')
+    text += shader(args.artifact, 'g71-blend', 's8_mali_blend_shader', 672, '0x3000000000000000',
+                   'be818f7610edc1690310232271fa8723250740318884c437be6b933efc8ef1b1')
     output = Path(__file__).resolve().parents[2] / 'xnu/dream2lte/S8MaliCopyShader.h'
     output.write_text(text, newline='\n')
 

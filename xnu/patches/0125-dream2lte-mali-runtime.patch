@@ -125,7 +125,7 @@
  
 --- /dev/null
 +++ b/iokit/Kernel/arm/S8MaliRuntime.h
-@@ -0,0 +1,353 @@
+@@ -0,0 +1,410 @@
 +/* SPDX-License-Identifier: GPL-2.0-only
 + * Opt-in Mali-G71 runtime bring-up for dream2lte. Not an IOAccelerator.
 + * Register/LPAE definitions: Linux Panfrost 141b164bbe18.
@@ -139,17 +139,46 @@
 +
 +namespace S8Mali {
 +#include "S8MaliCopyShader.h"
-+enum JobKind { Write32, Copy16, Clear16, RectTest, PanelCopy };
++enum JobKind { Write32, Copy16, Clear16, RectTest, PanelCopy, BlendTest };
 +static unsigned jobType(JobKind kind) {
 +	return kind == Write32 ? 2 : kind == Clear16 ? 9 : 4;
 +}
 +struct Rectangle {
 +	uint32_t src, dst, srcStride, dstStride, width, height;
++	uint32_t background, backgroundStride;
 +};
 +/* The diagnostic includes padding on each side and partial workgroups. */
-+static const Rectangle testRect = {0x2040, 0x2800, 80, 68, 13, 7};
++static const Rectangle testRect = {0x2040, 0x2800, 80, 68, 13, 7, 0, 0};
++static const Rectangle blendRect = {0x2040, 0x2800, 80, 68, 13, 7, 0x2480, 76};
 +static uint32_t testPixel(unsigned x, unsigned y) {
 +	return 0xac005a00u ^ ((y * testRect.width + x) * 0x10203u);
++}
++static uint32_t blendInput(bool background, unsigned x, unsigned y) {
++	const unsigned alphas[] = {0, 1, 63, 127, 128, 192, 254, 255};
++	unsigned alpha = alphas[(x + 3 * y + (background ? 3 : 0)) % 8];
++	unsigned blue = (alpha * (x + 1)) / 13;
++	unsigned green = (alpha * (y + 1)) / 7;
++	unsigned red = alpha - (blue + green) / 2;
++	return (alpha << 24) | (red << 16) | (green << 8) | blue;
++}
++static uint32_t blendPixel(unsigned x, unsigned y) {
++	uint32_t src = blendInput(false, x, y), dst = blendInput(true, x, y);
++	unsigned inverse = 255 - (src >> 24);
++	uint32_t result = 0;
++	for (unsigned shift = 0; shift < 32; shift += 8) {
++		unsigned front = (src >> shift) & 255;
++		unsigned below = (dst >> shift) & 255;
++		result |= (front + (below * inverse + 127) / 255) << shift;
++	}
++	return result;
++}
++static bool rectCoords(uint32_t address, uint32_t base, uint32_t stride,
++    const Rectangle *rect, unsigned &x, unsigned &y) {
++	if (address < base) return false;
++	uint32_t column = (address - base) % stride;
++	y = (address - base) / stride;
++	x = column / 4;
++	return y < rect->height && x < rect->width;
 +}
 +static unsigned bitsForCount(unsigned n) {
 +	unsigned bits = 0;
@@ -162,7 +191,7 @@
 +static IOBufferMemoryDescriptor *memory;
 +static uintptr_t bytes;
 +static uint64_t physical;
-+static bool ready;
++static bool ready, compositionVerified;
 +static unsigned tests;
 +enum { PAGE = 4096, SIZE = 7 * PAGE, COMMAND = 4 * PAGE, OUTPUT = 5 * PAGE };
 +static const uint32_t POISON = 0xdeadbeef;
@@ -251,12 +280,26 @@
 +			job[0x700 / 4 + 3] = rect->dstStride;
 +			job[0x700 / 4 + 4] = rect->width;
 +			job[0x700 / 4 + 5] = rect->height;
-+			for (unsigned i = 0; i < sizeof(s8_mali_rectangle_shader) / sizeof(uint32_t); i++)
-+				job[0x800 / 4 + i] = s8_mali_rectangle_shader[i];
++			job[0x700 / 4 + 6] = rect->background;
++			job[0x700 / 4 + 7] = rect->backgroundStride;
++			const uint32_t *shader = kind == BlendTest ?
++			    s8_mali_blend_shader : s8_mali_rectangle_shader;
++			const unsigned shaderBytes = kind == BlendTest ?
++			    sizeof(s8_mali_blend_shader) : sizeof(s8_mali_rectangle_shader);
++			static_assert(sizeof(s8_mali_blend_shader) <= 0x800, "shader fits command page");
++			for (unsigned i = 0; i < shaderBytes / sizeof(uint32_t); i++)
++				job[0x800 / 4 + i] = shader[i];
 +			if (kind == RectTest)
 +				for (unsigned y = 0; y < rect->height; y++)
 +					for (unsigned x = 0; x < rect->width; x++)
 +						dst[(rect->src - 0x2000 + y * rect->srcStride) / 4 + x] = testPixel(x, y);
++			if (kind == BlendTest)
++				for (unsigned y = 0; y < rect->height; y++)
++					for (unsigned x = 0; x < rect->width; x++) {
++						dst[(rect->src - 0x2000 + y * rect->srcStride) / 4 + x] = blendInput(false, x, y);
++						dst[(rect->background - 0x2000 + y * rect->backgroundStride) / 4 + x] =
++						    blendInput(true, x, y);
++					}
 +		}
 +	} else if (kind == Write32) {
 +		job[8] = 0x2000;
@@ -376,10 +419,18 @@
 +			const bool target = va >= rect->dst;
 +			const uint32_t base = target ? rect->dst : rect->src;
 +			const uint32_t pitch = target ? rect->dstStride : rect->srcStride;
-+			if (va >= base) {
-+				const unsigned y = (va - base) / pitch, x = ((va - base) % pitch) / 4;
-+				if (y < rect->height && x < rect->width) expect = testPixel(x, y);
-+			}
++			unsigned x, y;
++			if (rectCoords(va, base, pitch, rect, x, y)) expect = testPixel(x, y);
++		}
++		if (kind == BlendTest) {
++			const uint32_t va = 0x2000 + i * 4;
++			unsigned x, y;
++			if (rectCoords(va, rect->src, rect->srcStride, rect, x, y))
++				expect = blendInput(false, x, y);
++			else if (rectCoords(va, rect->background, rect->backgroundStride, rect, x, y))
++				expect = blendInput(true, x, y);
++			else if (rectCoords(va, rect->dst, rect->dstStride, rect, x, y))
++				expect = blendPixel(x, y);
 +		}
 +		if (((volatile uint32_t *)(bytes + OUTPUT))[i] != expect) errors++;
 +	}
@@ -430,7 +481,7 @@
 +	}
 +	if (quiesced) *quiesced = stopped;
 +	if (kind != PanelCopy || !ok || !stopped) {
-+		const char *names[] = {"write", "copy16", "clear16", "rect13x7", "panel-copy"};
++		const char *names[] = {"write", "copy16", "clear16", "rect13x7", "panel-copy", "blend13x7"};
 +		IOLog("S8 MALI: runtime %s stage=%u irq=%x mmu=%x status=%x first=%x bad=%u us=%llu cleanup=%u\n",
 +		    names[kind], stage, irq, fault, status, value, errors, elapsed / 26, stopped);
 +	}
@@ -468,6 +519,12 @@
 +	if (ready) ready = run(Clear16, 0xff00ff00);
 +	if (ready) ready = run(Copy16, 0);
 +	if (ready) ready = run(RectTest, 0, &testRect);
++	if (ready) {
++		bool stopped = true;
++		compositionVerified = run(BlendTest, 0, &blendRect, 0, &stopped);
++		IOLog("S8 MALI: layer composition verified=%u\n", compositionVerified);
++		if (!stopped) ready = false;
++	}
 +	IOLog("S8 MALI: runtime offscreen ready=%u\n", ready);
 +}
 +
@@ -481,7 +538,7 @@
 +#endif
 --- /dev/null
 +++ b/iokit/Kernel/arm/S8MaliCopyShader.h
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,83 @@
 +/* SPDX-License-Identifier: MIT
 + * Generated from mali-copy-shader.c by Mesa e24dc5bd1e7fe6101bdc866fb16a15a8fcae1aae, GPU 0x60a00001.
 + */
@@ -520,9 +577,54 @@
 +	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
 +	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
 +};
++/* SHA-256 be818f7610edc1690310232271fa8723250740318884c437be6b933efc8ef1b1 */
++static const uint32_t s8_mali_blend_shader[168] = {
++	0x0000400bu, 0x80cb1844u, 0xc0004197u, 0x29400808u,
++	0x00000070u, 0x00017000u, 0x00000000u, 0x00000000u,
++	0x0000400bu, 0x80cb1844u, 0xc0004197u, 0x01400888u,
++	0x00000070u, 0x00017100u, 0x00000000u, 0x00000000u,
++	0x4000002bu, 0x80cb1c78u, 0x8006da23u, 0x00000800u,
++	0x51040023u, 0x80cb1afau, 0x0006da23u, 0xb602c200u,
++	0x00000044u, 0x00000000u, 0x5c780000u, 0x6000f92bu,
++	0xc0004029u, 0x8b8ac043u, 0xc0076591u, 0x29400808u,
++	0x21040025u, 0x9e0608fau, 0x0007187bu, 0x58c2c000u,
++	0x00000005u, 0x80cb185cu, 0xe030319fu, 0xac01c638u,
++	0x00000072u, 0x00000020u, 0x00000000u, 0x00000000u,
++	0x30000029u, 0x9e060c7au, 0xc0076593u, 0x01400848u,
++	0x40000025u, 0x80cb1858u, 0x000718c3u, 0x58c2c080u,
++	0x70410001u, 0x9e060afau, 0xe0376593u, 0xa401c638u,
++	0x40000065u, 0x80cb1858u, 0x000718c3u, 0x58c2c300u,
++	0x00000047u, 0x80cb185cu, 0xe030319fu, 0xac01c638u,
++	0x01860029u, 0x80cb1868u, 0xc0072de3u, 0x00000008u,
++	0x20c34025u, 0x805a4028u, 0x200758f7u, 0x3f814008u,
++	0x01454005u, 0x80cb182cu, 0xe787189bu, 0x3401cb48u,
++	0x00000872u, 0x00000ff0u, 0x00000000u, 0x00000000u,
++	0x6186482du, 0x8388c048u, 0xc0071861u, 0x00000008u,
++	0x50004825u, 0x8388f858u, 0x28071861u, 0x58c1400au,
++	0x21864801u, 0x73526a8au, 0xe0372d61u, 0x2401cb58u,
++	0x41455065u, 0x9e063808u, 0x024718afu, 0x47c2e000u,
++	0x600048edu, 0x8388f858u, 0x60e71861u, 0x0001c61fu,
++	0x00004819u, 0x735fe85cu, 0x00076591u, 0x000000ffu,
++	0x00000079u, 0x00000800u, 0x00000000u, 0x00000000u,
++	0x00825829u, 0x8b88ce8cu, 0xc0072da1u, 0x30000808u,
++	0x20000021u, 0x8b878a8au, 0x2ac72da1u, 0x31c0420au,
++	0x00005801u, 0x8388f85cu, 0xe787187du, 0xb401c62bu,
++	0x00005865u, 0x8388f858u, 0x02071861u, 0xff42e000u,
++	0x500000cbu, 0x8b87c058u, 0x5cd76591u, 0x0001531cu,
++	0x20000019u, 0x80cb1808u, 0x00072de3u, 0x000000ffu,
++	0x00000079u, 0x00000800u, 0x00000000u, 0x00000000u,
++	0x2000482du, 0x9e064408u, 0x000718afu, 0x01800000u,
++	0x00004825u, 0x8388f85cu, 0x0247187du, 0x47c2c180u,
++	0x00005801u, 0x735fe85cu, 0x60e76591u, 0xa401c618u,
++	0x00005861u, 0x8b88f05cu, 0x00076591u, 0x3c02c000u,
++	0x100000d9u, 0x80cb1808u, 0x62e0b183u, 0x0001d964u,
++	0x0000001bu, 0x80cb185cu, 0x0003fcd3u, 0x00000080u,
++	0x00000179u, 0x00000ff0u, 0x00000000u, 0x00000000u,
++	0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u,
++};
 --- /dev/null
 +++ b/iokit/Kernel/arm/S8MaliPanel.h
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,135 @@
 +/* SPDX-License-Identifier: GPL-2.0-only
 + * Internal to the dream2lte framebuffer. Map only the observed full-frame
 + * IOSurface layout and the panel published by the framebuffer at startup.
@@ -548,6 +650,28 @@
 +	for (uintptr_t a = start; a < start + size; a += 64)
 +		__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
 +	__asm__ volatile("dsb sy" ::: "memory");
++}
++
++/* Read-only GPU access to a wired pixel buffer. The caller owns the table,
++ * and may only change it after jobs referring to its previous pages stop. */
++static bool mapPixelBuffer(uint64_t *leaf, unsigned count, IOBufferMemoryDescriptor *buffer,
++    unsigned size) {
++	if (!size || size % PAGE || size / PAGE > count || size > buffer->getLength())
++		return false;
++	bzero(leaf, count * sizeof(*leaf));
++	for (unsigned off = 0; off < size;) {
++		IOByteCount n = 0;
++		uint64_t p = buffer->getPhysicalSegment(off, &n, kIOMemoryMapperNone);
++		if (!p || p % PAGE || !n || n % PAGE) return false;
++		if (n > size - off) n = size - off;
++		if (p > (1ULL << 36) - n ||
++		    (p < PanelPhys + PanelPitch * PanelH && p + n > PanelPhys)) return false;
++		for (unsigned pos = 0; pos < n; pos += PAGE)
++			leaf[(off + pos) / PAGE] = (p + pos) | DataXN | 0x241;
++		off += (unsigned)n;
++	}
++	cleanRange((uintptr_t)leaf, count * sizeof(*leaf));
++	return true;
 +}
 +
 +static void enablePanel(uint64_t phys, unsigned w, unsigned h, unsigned stride) {
@@ -583,17 +707,7 @@
 +	uint64_t *leaf = (uint64_t *)leafMemory->getBytesNoCopy();
 +	const unsigned size = SourcePitch * PanelH;
 +	static_assert(size % PAGE == 0 && size <= TABLES_PER_SURFACE * 512 * PAGE, "source range");
-+	for (unsigned off = 0; off < size;) {
-+		IOByteCount n = 0;
-+		uint64_t p = src->getPhysicalSegment(off, &n, kIOMemoryMapperNone);
-+		if (n > size - off) n = size - off;
-+		if (!p || (p % PAGE) || !n || (n % PAGE) || p > (1ULL << 36) - n ||
-+		    (p < PanelPhys + PanelPitch * PanelH && p + n > PanelPhys)) return false;
-+		for (unsigned pos = 0; pos < n; pos += PAGE)
-+			leaf[(off + pos) / PAGE] = (p + pos) | DataXN | 0x241; /* read-only */
-+		off += (unsigned)n;
-+	}
-+	cleanRange((uintptr_t)leaf, LeafBytes / 2);
++	if (!mapPixelBuffer(leaf, TABLES_PER_SURFACE * 512, src, size)) return false;
 +	src->retain();
 +	mappedSource = src;
 +	return true;
@@ -619,7 +733,7 @@
 +		return false;
 +	}
 +	cleanRange(pixels, SourcePitch * PanelH);
-+	const Rectangle rect = {PANEL_SRC, PANEL_DST, SourcePitch, PanelPitch, PanelW, PanelH};
++	const Rectangle rect = {PANEL_SRC, PANEL_DST, SourcePitch, PanelPitch, PanelW, PanelH, 0, 0};
 +	bool quiesced = true;
 +	bool ok = run(PanelCopy, 0, &rect, leafPhysical, &quiesced);
 +	if (ok && (frames < 3 || frames % 120 == 0)) {

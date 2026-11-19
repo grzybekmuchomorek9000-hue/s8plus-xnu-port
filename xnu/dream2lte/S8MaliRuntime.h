@@ -11,17 +11,46 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 
 namespace S8Mali {
 #include "S8MaliCopyShader.h"
-enum JobKind { Write32, Copy16, Clear16, RectTest, PanelCopy };
+enum JobKind { Write32, Copy16, Clear16, RectTest, PanelCopy, BlendTest };
 static unsigned jobType(JobKind kind) {
 	return kind == Write32 ? 2 : kind == Clear16 ? 9 : 4;
 }
 struct Rectangle {
 	uint32_t src, dst, srcStride, dstStride, width, height;
+	uint32_t background, backgroundStride;
 };
 /* The diagnostic includes padding on each side and partial workgroups. */
-static const Rectangle testRect = {0x2040, 0x2800, 80, 68, 13, 7};
+static const Rectangle testRect = {0x2040, 0x2800, 80, 68, 13, 7, 0, 0};
+static const Rectangle blendRect = {0x2040, 0x2800, 80, 68, 13, 7, 0x2480, 76};
 static uint32_t testPixel(unsigned x, unsigned y) {
 	return 0xac005a00u ^ ((y * testRect.width + x) * 0x10203u);
+}
+static uint32_t blendInput(bool background, unsigned x, unsigned y) {
+	const unsigned alphas[] = {0, 1, 63, 127, 128, 192, 254, 255};
+	unsigned alpha = alphas[(x + 3 * y + (background ? 3 : 0)) % 8];
+	unsigned blue = (alpha * (x + 1)) / 13;
+	unsigned green = (alpha * (y + 1)) / 7;
+	unsigned red = alpha - (blue + green) / 2;
+	return (alpha << 24) | (red << 16) | (green << 8) | blue;
+}
+static uint32_t blendPixel(unsigned x, unsigned y) {
+	uint32_t src = blendInput(false, x, y), dst = blendInput(true, x, y);
+	unsigned inverse = 255 - (src >> 24);
+	uint32_t result = 0;
+	for (unsigned shift = 0; shift < 32; shift += 8) {
+		unsigned front = (src >> shift) & 255;
+		unsigned below = (dst >> shift) & 255;
+		result |= (front + (below * inverse + 127) / 255) << shift;
+	}
+	return result;
+}
+static bool rectCoords(uint32_t address, uint32_t base, uint32_t stride,
+    const Rectangle *rect, unsigned &x, unsigned &y) {
+	if (address < base) return false;
+	uint32_t column = (address - base) % stride;
+	y = (address - base) / stride;
+	x = column / 4;
+	return y < rect->height && x < rect->width;
 }
 static unsigned bitsForCount(unsigned n) {
 	unsigned bits = 0;
@@ -34,7 +63,7 @@ static vm_offset_t regs;
 static IOBufferMemoryDescriptor *memory;
 static uintptr_t bytes;
 static uint64_t physical;
-static bool ready;
+static bool ready, compositionVerified;
 static unsigned tests;
 enum { PAGE = 4096, SIZE = 7 * PAGE, COMMAND = 4 * PAGE, OUTPUT = 5 * PAGE };
 static const uint32_t POISON = 0xdeadbeef;
@@ -123,12 +152,26 @@ static void prepare(JobKind kind, uint32_t color, const Rectangle *rect, uint64_
 			job[0x700 / 4 + 3] = rect->dstStride;
 			job[0x700 / 4 + 4] = rect->width;
 			job[0x700 / 4 + 5] = rect->height;
-			for (unsigned i = 0; i < sizeof(s8_mali_rectangle_shader) / sizeof(uint32_t); i++)
-				job[0x800 / 4 + i] = s8_mali_rectangle_shader[i];
+			job[0x700 / 4 + 6] = rect->background;
+			job[0x700 / 4 + 7] = rect->backgroundStride;
+			const uint32_t *shader = kind == BlendTest ?
+			    s8_mali_blend_shader : s8_mali_rectangle_shader;
+			const unsigned shaderBytes = kind == BlendTest ?
+			    sizeof(s8_mali_blend_shader) : sizeof(s8_mali_rectangle_shader);
+			static_assert(sizeof(s8_mali_blend_shader) <= 0x800, "shader fits command page");
+			for (unsigned i = 0; i < shaderBytes / sizeof(uint32_t); i++)
+				job[0x800 / 4 + i] = shader[i];
 			if (kind == RectTest)
 				for (unsigned y = 0; y < rect->height; y++)
 					for (unsigned x = 0; x < rect->width; x++)
 						dst[(rect->src - 0x2000 + y * rect->srcStride) / 4 + x] = testPixel(x, y);
+			if (kind == BlendTest)
+				for (unsigned y = 0; y < rect->height; y++)
+					for (unsigned x = 0; x < rect->width; x++) {
+						dst[(rect->src - 0x2000 + y * rect->srcStride) / 4 + x] = blendInput(false, x, y);
+						dst[(rect->background - 0x2000 + y * rect->backgroundStride) / 4 + x] =
+						    blendInput(true, x, y);
+					}
 		}
 	} else if (kind == Write32) {
 		job[8] = 0x2000;
@@ -248,10 +291,18 @@ static bool run(JobKind kind, uint32_t color, const Rectangle *rect = NULL,
 			const bool target = va >= rect->dst;
 			const uint32_t base = target ? rect->dst : rect->src;
 			const uint32_t pitch = target ? rect->dstStride : rect->srcStride;
-			if (va >= base) {
-				const unsigned y = (va - base) / pitch, x = ((va - base) % pitch) / 4;
-				if (y < rect->height && x < rect->width) expect = testPixel(x, y);
-			}
+			unsigned x, y;
+			if (rectCoords(va, base, pitch, rect, x, y)) expect = testPixel(x, y);
+		}
+		if (kind == BlendTest) {
+			const uint32_t va = 0x2000 + i * 4;
+			unsigned x, y;
+			if (rectCoords(va, rect->src, rect->srcStride, rect, x, y))
+				expect = blendInput(false, x, y);
+			else if (rectCoords(va, rect->background, rect->backgroundStride, rect, x, y))
+				expect = blendInput(true, x, y);
+			else if (rectCoords(va, rect->dst, rect->dstStride, rect, x, y))
+				expect = blendPixel(x, y);
 		}
 		if (((volatile uint32_t *)(bytes + OUTPUT))[i] != expect) errors++;
 	}
@@ -302,7 +353,7 @@ cleanup:
 	}
 	if (quiesced) *quiesced = stopped;
 	if (kind != PanelCopy || !ok || !stopped) {
-		const char *names[] = {"write", "copy16", "clear16", "rect13x7", "panel-copy"};
+		const char *names[] = {"write", "copy16", "clear16", "rect13x7", "panel-copy", "blend13x7"};
 		IOLog("S8 MALI: runtime %s stage=%u irq=%x mmu=%x status=%x first=%x bad=%u us=%llu cleanup=%u\n",
 		    names[kind], stage, irq, fault, status, value, errors, elapsed / 26, stopped);
 	}
@@ -340,6 +391,12 @@ static void init() {
 	if (ready) ready = run(Clear16, 0xff00ff00);
 	if (ready) ready = run(Copy16, 0);
 	if (ready) ready = run(RectTest, 0, &testRect);
+	if (ready) {
+		bool stopped = true;
+		compositionVerified = run(BlendTest, 0, &blendRect, 0, &stopped);
+		IOLog("S8 MALI: layer composition verified=%u\n", compositionVerified);
+		if (!stopped) ready = false;
+	}
 	IOLog("S8 MALI: runtime offscreen ready=%u\n", ready);
 }
 

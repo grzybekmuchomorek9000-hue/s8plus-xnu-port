@@ -25,6 +25,28 @@ static void cleanRange(uintptr_t start, unsigned size) {
 	__asm__ volatile("dsb sy" ::: "memory");
 }
 
+/* Read-only GPU access to a wired pixel buffer. The caller owns the table,
+ * and may only change it after jobs referring to its previous pages stop. */
+static bool mapPixelBuffer(uint64_t *leaf, unsigned count, IOBufferMemoryDescriptor *buffer,
+    unsigned size) {
+	if (!size || size % PAGE || size / PAGE > count || size > buffer->getLength())
+		return false;
+	bzero(leaf, count * sizeof(*leaf));
+	for (unsigned off = 0; off < size;) {
+		IOByteCount n = 0;
+		uint64_t p = buffer->getPhysicalSegment(off, &n, kIOMemoryMapperNone);
+		if (!p || p % PAGE || !n || n % PAGE) return false;
+		if (n > size - off) n = size - off;
+		if (p > (1ULL << 36) - n ||
+		    (p < PanelPhys + PanelPitch * PanelH && p + n > PanelPhys)) return false;
+		for (unsigned pos = 0; pos < n; pos += PAGE)
+			leaf[(off + pos) / PAGE] = (p + pos) | DataXN | 0x241;
+		off += (unsigned)n;
+	}
+	cleanRange((uintptr_t)leaf, count * sizeof(*leaf));
+	return true;
+}
+
 static void enablePanel(uint64_t phys, unsigned w, unsigned h, unsigned stride) {
 	int opt = 0;
 	if (!ready || !PE_parse_boot_argn("s8mali_present", &opt, sizeof(opt)) || opt != 1 ||
@@ -58,17 +80,7 @@ static bool mapSource(IOBufferMemoryDescriptor *src) {
 	uint64_t *leaf = (uint64_t *)leafMemory->getBytesNoCopy();
 	const unsigned size = SourcePitch * PanelH;
 	static_assert(size % PAGE == 0 && size <= TABLES_PER_SURFACE * 512 * PAGE, "source range");
-	for (unsigned off = 0; off < size;) {
-		IOByteCount n = 0;
-		uint64_t p = src->getPhysicalSegment(off, &n, kIOMemoryMapperNone);
-		if (n > size - off) n = size - off;
-		if (!p || (p % PAGE) || !n || (n % PAGE) || p > (1ULL << 36) - n ||
-		    (p < PanelPhys + PanelPitch * PanelH && p + n > PanelPhys)) return false;
-		for (unsigned pos = 0; pos < n; pos += PAGE)
-			leaf[(off + pos) / PAGE] = (p + pos) | DataXN | 0x241; /* read-only */
-		off += (unsigned)n;
-	}
-	cleanRange((uintptr_t)leaf, LeafBytes / 2);
+	if (!mapPixelBuffer(leaf, TABLES_PER_SURFACE * 512, src, size)) return false;
 	src->retain();
 	mappedSource = src;
 	return true;
@@ -94,7 +106,7 @@ static bool presentPanel(SweetSurface *surface, uintptr_t panel, int sx, int sy,
 		return false;
 	}
 	cleanRange(pixels, SourcePitch * PanelH);
-	const Rectangle rect = {PANEL_SRC, PANEL_DST, SourcePitch, PanelPitch, PanelW, PanelH};
+	const Rectangle rect = {PANEL_SRC, PANEL_DST, SourcePitch, PanelPitch, PanelW, PanelH, 0, 0};
 	bool quiesced = true;
 	bool ok = run(PanelCopy, 0, &rect, leafPhysical, &quiesced);
 	if (ok && (frames < 3 || frames % 120 == 0)) {

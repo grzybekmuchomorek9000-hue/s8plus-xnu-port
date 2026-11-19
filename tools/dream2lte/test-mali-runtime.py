@@ -51,6 +51,7 @@ public:
             return region ? 0x880200000ULL : 0x880100000ULL;
         }
         *n = 4096;
+        if (region == 4) return 0xcc000000;
         return (region == 2 ? 0x881000000ULL : 0x885000000ULL) + 2ULL * off;
     }
     void *getBytesNoCopy() { return (void *)(uintptr_t)(0x40000000 + (region == 1 ? 0x10000 : region * 0x2000000)); }
@@ -69,6 +70,7 @@ struct SweetSurface {
 ENTRY = r'''
 extern "C" int entry(unsigned mode) {
     S8Mali::init();
+    if (mode == 3) return S8Mali::compositionVerified;
     if (!mode) {
         S8Mali::tick(600); S8Mali::tick(1200);
         return S8Mali::ready;
@@ -77,6 +79,7 @@ extern "C" int entry(unsigned mode) {
     IOBufferMemoryDescriptor memory[2] = {{2},{3}};
     SweetSurface s = {1440,2960,0,5888,0,0,0x42475241,4,1,1,&memory[0]};
     if (mode == 2) s.offset = 4;
+    if (mode == 4) memory[0].region = 4;
     int flags = S8Mali::presentPanel(&s, 0x48000000, 0,0,0,0,1440,2960) ? 1 : 0;
     s.memory = &memory[1];
     if (S8Mali::presentPanel(&s, 0x48000000, 0,0,0,0,1440,2960)) flags |= 2;
@@ -177,16 +180,17 @@ def check(elf, scenario, reference):
                 assert struct.unpack('<Q', uc.mem_read(cpu + 3*4096 + i*8, 8))[0] == (0x880100000 + (i+3)*4096) | 0x2c1
             assert read32(cpu + 3*4096 + 3*8) == 0  # canary is unmapped
             rectangle = kind == 4 and read32(desc + 0x530) != 0
+            blend = rectangle and read32(desc + 0x718) != 0
             if kind == 4 and reference:
                 packet = bytes(uc.mem_read(desc, 192) + uc.mem_read(desc + 0x500, 64) +
                                uc.mem_read(desc + 0x600, 32))
-                name = ('copy16' if not rectangle else
+                name = ('copy16' if not rectangle else 'blend' if blend else
                         'panel' if read32(desc + 0x700) == 0x2000000 else 'rectangle')
                 expected = reference[name]
                 if packet != expected:
                     diff = [(i, a, b) for i, (a, b) in enumerate(zip(packet, expected)) if a != b]
                     raise AssertionError((name, 'driver vs Mesa packet bytes', diff[:12]))
-            jobs.append('rect' if rectangle else kind)
+            jobs.append('blend' if blend else 'rect' if rectangle else kind)
             if scenario == 'job-timeout': return
             values[off] = 0
             if scenario == 'mmu-fault':
@@ -216,8 +220,13 @@ def check(elf, scenario, reference):
                 if scenario == 'copy-overrun': write32(target + 0x210, 0)
                 if scenario == 'copy-source-damaged': write32(target, 0)
             elif rectangle:
-                shader = bytes(uc.mem_read(desc + 0x800, 304))
-                assert hashlib.sha256(shader).hexdigest() == '819ab9b35721fecc1513f742ffe54062eb920e589e28356c1c2f35ed80ff3fd0'
+                size, digest = (
+                    (672, 'be818f7610edc1690310232271fa8723250740318884c437be6b933efc8ef1b1')
+                    if blend else
+                    (304, '819ab9b35721fecc1513f742ffe54062eb920e589e28356c1c2f35ed80ff3fd0')
+                )
+                shader = bytes(uc.mem_read(desc + 0x800, size))
+                assert hashlib.sha256(shader).hexdigest() == digest
                 assert read32(desc + 0x530) == 3 << 12 and read32(desc + 40) == 8 << 26
                 assert (read32(desc + 120), read32(desc + 176), read32(desc + 0x500)) == (0x1500, 0x1600, 0x1800)
                 src, dst, sp, dp, w, h = struct.unpack('<6I', uc.mem_read(desc + 0x700, 24))
@@ -229,9 +238,25 @@ def check(elf, scenario, reference):
                 if src == 0x2040:
                     assert (dst, sp, dp, w, h) == (0x2800, 80, 68, 13, 7)
                     if scenario == 'rect-wrong-pitch': dp = sp
-                    for y in range(h):
-                        uc.mem_write(target + dst-0x2000 + y*dp, bytes(uc.mem_read(target + src-0x2000 + y*sp, w*4)))
-                    if scenario == 'rect-tail': write32(target + dst-0x2000 + w*4, 0)
+                    if blend:
+                        back, bp = struct.unpack('<II', uc.mem_read(desc + 0x718, 8))
+                        assert (back, bp) == (0x2480, 76)
+                        for y in range(h):
+                            front_row = uc.mem_read(target + src-0x2000 + y*sp, w*4)
+                            back_row = uc.mem_read(target + back-0x2000 + y*bp, w*4)
+                            out = bytearray(w*4)
+                            for j in range(w*4):
+                                alpha = front_row[j | 3]
+                                out[j] = round(front_row[j] + back_row[j] * (255-alpha) / 255)
+                            uc.mem_write(target + dst-0x2000 + y*dp, bytes(out))
+                        if scenario == 'blend-math-error': write32(target + dst-0x2000, 0)
+                        if scenario == 'blend-input-damage': write32(target + back-0x2000, 0)
+                        if scenario == 'blend-boundary': write32(target + dst-0x2000 + w*4, 0)
+                    else:
+                        for y in range(h):
+                            row = bytes(uc.mem_read(target + src-0x2000 + y*sp, w*4))
+                            uc.mem_write(target + dst-0x2000 + y*dp, row)
+                        if scenario == 'rect-tail': write32(target + dst-0x2000 + w*4, 0)
                 else:
                     assert is_panel and (src, dst, sp, dp, w, h) == (0x2000000, 0x4000000, 5888, 5760, 1440, 2960)
                     index = panel_frames
@@ -275,21 +300,30 @@ def check(elf, scenario, reference):
                 uc.hook_add(UC_HOOK_CODE, code, begin=va+i, end=va+i)
     uc.reg_write(UC_ARM64_REG_SP, 0x50fff0)
     uc.reg_write(UC_ARM64_REG_LR, 0x2ff000)
-    uc.reg_write(UC_ARM64_REG_X0, 2 if scenario == 'panel-offset' else int(is_panel))
+    mode = {'panel-offset': 2, 'panel-invalid-mapping': 4}.get(scenario, int(is_panel))
+    if scenario.startswith('blend-'):
+        mode = 3
+    uc.reg_write(UC_ARM64_REG_X0, mode)
     uc.emu_start(entry, 0x2ff000, count=10000000)
     assert uc.reg_read(UC_ARM64_REG_PC) == 0x2ff000, (scenario, 'did not terminate')
     result = uc.reg_read(UC_ARM64_REG_X0)
     if is_panel:
         expected = {'panel-frames': (3, 2), 'panel-offset': (0, 0),
+                    'panel-invalid-mapping': (0, 0),
                     'panel-readback-failure': (0, 1), 'panel-flush-timeout': (7, 1)}
         assert (result, panel_frames) == expected[scenario], (scenario, result, panel_frames)
         if panel_frames and scenario != 'panel-flush-timeout':
             assert values.get(0x2400, 0) == values.get(0x2428, 0) == 0
         print(scenario + ': passed')
         return
+    if mode == 3:
+        assert jobs == [2, 9, 4, 'rect', 'blend']
+        assert bool(result) == (scenario == 'blend-success'), (scenario, result)
+        print(scenario + ': passed')
+        return
     success_cases = ('success', 'deadline-completion', 'done-without-irq', 'late-irq', 'compute-slot2')
     assert bool(result) == (scenario in success_cases), (scenario, result)
-    if scenario in success_cases: assert jobs == [2, 9, 4, 'rect', 9, 9] and complete
+    if scenario in success_cases: assert jobs == [2, 9, 4, 'rect', 'blend', 9, 9] and complete
     if scenario == 'missing-compute': assert jobs == [2, 9]
     if scenario.startswith('copy-'): assert jobs == [2, 9, 4]
     if scenario.startswith('rect-'): assert jobs == [2, 9, 4, 'rect']
@@ -312,9 +346,11 @@ def main():
     if args.mesa_artifact:
         copy = (args.mesa_artifact / 'copy16-packets.bin').read_bytes()
         rectangles = (args.mesa_artifact / 'rectangle-packets.bin').read_bytes()
-        if len(copy) != 288 or len(rectangles) != 576:
+        blend = (args.mesa_artifact / 'blend-packets.bin').read_bytes()
+        if len(copy) != 288 or len(rectangles) != 576 or len(blend) != 576:
             raise ValueError('unexpected reference packet lengths')
-        reference = {'copy16': copy, 'rectangle': rectangles[:288], 'panel': rectangles[288:]}
+        reference = {'copy16': copy, 'rectangle': rectangles[:288], 'panel': rectangles[288:],
+                     'blend': blend[:288]}
     root = Path(__file__).resolve().parents[2]
     header = root / 'xnu/dream2lte/S8MaliRuntime.h'
     with tempfile.TemporaryDirectory() as name:
@@ -335,7 +371,9 @@ def main():
                          'busy', 'wrong-id', 'power-timeout', 'mmu-timeout',
                          'job-timeout', 'mmu-fault', 'overrun', 'missing-compute',
                          'copy-no-store', 'copy-overrun', 'copy-source-damaged', 'rect-wrong-pitch',
-                         'rect-tail', 'compute-slot2', 'panel-frames', 'panel-offset', 'panel-readback-failure', 'panel-flush-timeout'):
+                         'rect-tail', 'compute-slot2', 'blend-success', 'blend-math-error',
+                         'blend-input-damage', 'blend-boundary', 'panel-frames', 'panel-offset',
+                         'panel-readback-failure', 'panel-flush-timeout', 'panel-invalid-mapping'):
             check(data, scenario, reference)
 
 

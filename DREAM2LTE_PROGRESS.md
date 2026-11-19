@@ -519,3 +519,14 @@ memory map, GPU, display-panel or touch support has been established.
   two frames where the overlay moves. A software renderer fails the
   test. The Mesa client currently needs the matching graphics transport
   in the S8+ kernel before it can run on the phone.
+- Mesa iOS bundle build `44544440671` compiled the offscreen GLES test and
+  Mesa libraries. Shader build `44545019653` independently produced and
+  disassembled the 672-byte G71 source-over program, SHA-256
+  `be818f7610edc1690310232271fa8723250740318884c437be6b933efc8ef1b1`.
+- The XNU driver runs the source-over program on two patterned translucent
+  surfaces with different row pitches, and checks both inputs, the output,
+  padding and the unmapped canary. The established presenter is allowed to
+  continue after a cleanly retired blend failure. The ARM64 model passed
+  all 28 cases, including the Mesa command comparison and three blend
+  failure cases. The framebuffer object compiled with the actual XNU
+  headers. Blending under XNU on physical hardware is pending.
