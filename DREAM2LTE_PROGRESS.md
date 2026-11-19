@@ -591,3 +591,11 @@ memory map, GPU, display-panel or touch support has been established.
   XNU object build pass. TWRP lacks an HFS+ filesystem driver. The
   probe still needs a launch path in the active iOS installation.
   Mesa job submission and Core Animation integration are pending.
+- The signed ARM64 iOS client built in `44561604690`. The host
+  IOKit model verified the successful check and rejected connection
+  denial, a bad pixel and overwritten padding. The staging helper
+  verified the build digest and prepared a one-shot LaunchDaemon
+  on a test directory. Load by this iOS build's launchd is unverified.
+- A read-only probe verified the live 16 GiB HFSX volume is journaled.
+  Recovery lacks the HFS+ module. No filesystem changes were made to
+  the active volume.
