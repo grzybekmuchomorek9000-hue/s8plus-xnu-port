@@ -548,3 +548,15 @@ memory map, GPU, display-panel or touch support has been established.
   The full BOOT readback was
   `c209b6c8b5fd8c29553c857a2482e4fd911aa54aca2d9b0480658d2f3edd94b9`.
   Requested iOS boot followed by return to TWRP for results.
+- Read the v7 kernel log after the user returned to TWRP. On the physical
+  SM-G955F the G71 blended both 13×7 layers in 30 μs with all 91 output
+  pixels correct, zero MMU faults and successful job cleanup. Three sampled
+  full-frame copies passed again in 32.2–33.3 ms each. Backboardd still
+  handed the framebuffer one composited layer.
+- Added a render address allocator with a private 64 MiB GPU address range.
+  The diagnostic now blends two read-only inputs into a separate writable
+  output across independent wired pages, using unmapped guard pages and
+  distinct row pitches. Verified 33 ARM64 model cases and compiled the
+  framebuffer with XNU headers. The new cases cover all GPU pages and
+  permissions, output padding, rollback on a bad physical page and keeping
+  the backing allocations alive when the MMU does not retire them.

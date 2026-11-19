@@ -54,7 +54,8 @@ def main():
         after = after.replace(old, new)
     patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
                                        'a/' + path, 'b/' + path))
-    for name in ('S8MaliRuntime.h', 'S8MaliCopyShader.h', 'S8MaliPanel.h', 'S8MaliGlesCaps.h'):
+    for name in ('S8MaliRuntime.h', 'S8MaliCopyShader.h', 'S8MaliPanel.h',
+                 'S8MaliGlesCaps.h', 'S8MaliBuffers.h'):
         header = (root / 'xnu/dream2lte' / name).read_text()
         patch += ''.join(difflib.unified_diff([], header.splitlines(True), '/dev/null',
                                             'b/iokit/Kernel/arm/' + name))

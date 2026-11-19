@@ -23,6 +23,7 @@ typedef unsigned long long IOByteCount;
 #define DREAMLTE 1
 #define DREAM2LTE_BRINGUP 1
 static void *kernel_task;
+static bool invalidRenderPage;
 enum { kIODirectionInOut = 3, kIOMemoryPhysicallyContiguous = 16, kIOMemoryMapperNone = 0x800 };
 static void bzero(void *p, unsigned long n) {
     volatile unsigned char *v = (volatile unsigned char *)p;
@@ -41,21 +42,37 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t p, vm_size_t) { return p; }
 class IOBufferMemoryDescriptor {
 public:
     unsigned region;
-    static IOBufferMemoryDescriptor *inTaskWithOptions(void *, unsigned, unsigned size, unsigned) {
-        static IOBufferMemoryDescriptor m[2] = {{0},{1}};
-        return &m[size != 7 * 4096];
+    static IOBufferMemoryDescriptor *inTaskWithOptions(void *, unsigned options, unsigned size, unsigned) {
+        static IOBufferMemoryDescriptor runtime{0}, panel{1}, tables{5}, render[3] = {{6},{7},{8}};
+        static unsigned allocated;
+        if (!(options & kIOMemoryPhysicallyContiguous))
+            return allocated < 3 ? &render[allocated++] : NULL;
+        if (size == 7 * 4096) return &runtime;
+        return size == 32 * 4096 ? &tables : &panel;
     }
     uint64_t getPhysicalSegment(unsigned off, IOByteCount *n, unsigned = 0) {
         if (region < 2) {
             *n = (region ? 18 : 7) * 4096;
             return region ? 0x880200000ULL : 0x880100000ULL;
         }
+        if (region == 5) {
+            *n = 32 * 4096;
+            return 0x880300000ULL;
+        }
         *n = 4096;
+        if (region >= 6) {
+            if (invalidRenderPage && region == 7 && off == 4096) return 0;
+            return 0x882000000ULL + ((region - 6) << 20) + 2ULL * off;
+        }
         if (region == 4) return 0xcc000000;
         return (region == 2 ? 0x881000000ULL : 0x885000000ULL) + 2ULL * off;
     }
-    void *getBytesNoCopy() { return (void *)(uintptr_t)(0x40000000 + (region == 1 ? 0x10000 : region * 0x2000000)); }
-    IOByteCount getLength() { return 17428480; }
+    void *getBytesNoCopy() {
+        if (region == 5) return (void *)(uintptr_t)0x41000000;
+        if (region >= 6) return (void *)(uintptr_t)(0x42000000 + ((region - 6) << 20));
+        return (void *)(uintptr_t)(0x40000000 + (region == 1 ? 0x10000 : region * 0x2000000));
+    }
+    IOByteCount getLength() { return region >= 6 ? 7 * 4096 : 17428480; }
     void retain() {}
     void release() {}
 };
@@ -69,6 +86,7 @@ struct SweetSurface {
 
 ENTRY = r'''
 extern "C" int entry(unsigned mode) {
+    invalidRenderPage = mode == 9;
     S8Mali::init();
     if (mode == 5) {
         S8Mali::logGlesCaps();
@@ -84,7 +102,8 @@ extern "C" int entry(unsigned mode) {
                S8Mali::getGpuProperty(44, value) && value == 31 &&
                !S8Mali::getGpuProperty(45, value);
     }
-    if (mode == 3) return S8Mali::compositionVerified;
+    if (mode == 3 || mode == 6 || mode == 9)
+        return (S8Mali::compositionVerified ? 1 : 0) | (S8Mali::ready ? 2 : 0);
     if (!mode) {
         S8Mali::tick(600); S8Mali::tick(1200);
         return S8Mali::ready;
@@ -131,6 +150,9 @@ def check(elf, scenario, reference):
     uc.mem_map(gpu, 0x5000)
     uc.mem_map(0x16484000, 4096)
     uc.mem_map(cpu, 0x10000)
+    uc.mem_map(0x41000000, 32 * 4096)
+    for base in (0x42000000, 0x42100000, 0x42200000):
+        uc.mem_map(base, 7 * 4096)
     is_panel = scenario.startswith('panel-')
     panel_frames = 0
     if is_panel:
@@ -160,6 +182,15 @@ def check(elf, scenario, reference):
     def read32(addr): return struct.unpack('<I', uc.mem_read(addr, 4))[0]
     def write32(addr, v): uc.mem_write(addr, struct.pack('<I', v))
 
+    def blend_row(front, back, output, width):
+        front_row = uc.mem_read(front, width*4)
+        back_row = uc.mem_read(back, width*4)
+        out = bytearray(width*4)
+        for j in range(width*4):
+            alpha = front_row[j | 3]
+            out[j] = round(front_row[j] + back_row[j] * (255-alpha) / 255)
+        uc.mem_write(output, bytes(out))
+
     def io(_uc, access, address, size, value, _):
         from unicorn import UC_MEM_READ
         nonlocal complete, as_ready_after, last_slot, panel_frames
@@ -181,7 +212,11 @@ def check(elf, scenario, reference):
         if off == 0x2004: values[0x2000] = values.get(0x2000, 0) & ~value
         if off == 0x2418:
             values[0x2428] = 1 if scenario == 'mmu-timeout' else 0
-            if scenario == 'panel-flush-timeout' and value == 5: values[0x2428] = 1
+            if value == 5 and jobs:
+                if scenario == 'panel-flush-timeout' and jobs[-1] == 'panel':
+                    values[0x2428] = 1
+                if scenario == 'render-flush-timeout' and jobs[-1] == 'render':
+                    values[0x2428] = 1
             if scenario == 'deadline-completion': as_ready_after = clock + 2600000
         if off in (0x1860, 0x18e0, 0x1960) and value == 1:
             slot = (off - 0x1860) // 0x80
@@ -197,16 +232,17 @@ def check(elf, scenario, reference):
             assert read32(cpu + 3*4096 + 3*8) == 0  # canary is unmapped
             rectangle = kind == 4 and read32(desc + 0x530) != 0
             blend = rectangle and read32(desc + 0x718) != 0
+            render = blend and read32(desc + 0x700) >= 0x02000000
+            panel = rectangle and not blend and read32(desc + 0x700) == 0x02000000
             if kind == 4 and reference:
                 packet = bytes(uc.mem_read(desc, 192) + uc.mem_read(desc + 0x500, 64) +
                                uc.mem_read(desc + 0x600, 32))
-                name = ('copy16' if not rectangle else 'blend' if blend else
-                        'panel' if read32(desc + 0x700) == 0x2000000 else 'rectangle')
+                name = ('copy16' if not rectangle else 'blend' if blend else 'panel' if panel else 'rectangle')
                 expected = reference[name]
                 if packet != expected:
                     diff = [(i, a, b) for i, (a, b) in enumerate(zip(packet, expected)) if a != b]
                     raise AssertionError((name, 'driver vs Mesa packet bytes', diff[:12]))
-            jobs.append('blend' if blend else 'rect' if rectangle else kind)
+            jobs.append('render' if render else 'blend' if blend else 'panel' if panel else 'rect' if rectangle else kind)
             if scenario == 'job-timeout': return
             values[off] = 0
             if scenario == 'mmu-fault':
@@ -251,20 +287,36 @@ def check(elf, scenario, reference):
                           (shifts >> 16) & 63, (shifts >> 22) & 63, 32]
                 dims = [((inv >> a) & ((1 << (b-a))-1)) + 1 for a, b in zip(fields, fields[1:])]
                 assert dims == [8, 4, 1, (w+7)//8, (h+3)//4, 1] and shifts >> 28 == 5
-                if src == 0x2040:
+                if render:
+                    back, bp = struct.unpack('<II', uc.mem_read(desc + 0x718, 8))
+                    assert (src, back, dst) == (0x02001000, 0x02009000, 0x02011000)
+                    assert (sp, bp, dp, w, h) == (4096, 4112, 4080, 13, 7)
+                    for n in range(32):
+                        l2 = struct.unpack('<Q', uc.mem_read(cpu + 8192 + (16+n)*8, 8))[0]
+                        assert l2 == (0x880300000 + n*4096) | 3
+                    for n in range(32 * 512):
+                        pte = struct.unpack('<Q', uc.mem_read(0x41000000 + n*8, 8))[0]
+                        offset = n % 8
+                        region = n // 8
+                        if not offset or region > 2:
+                            assert not pte, ('unallocated GPU page was mapped', n)
+                        else:
+                            phys = 0x882000000 + region*0x100000 + (offset-1)*8192
+                            flags = 0x2c1 if region == 2 else 0x241
+                            assert pte == phys | flags | (3 << 53)
+                    for y in range(h):
+                        blend_row(0x42000000 + y*sp, 0x42100000 + y*bp, 0x42200000 + y*dp, w)
+                    if scenario == 'render-padding':
+                        write32(0x42200000 + dp + w*4, 0)
+                elif src == 0x2040:
                     assert (dst, sp, dp, w, h) == (0x2800, 80, 68, 13, 7)
                     if scenario == 'rect-wrong-pitch': dp = sp
                     if blend:
                         back, bp = struct.unpack('<II', uc.mem_read(desc + 0x718, 8))
                         assert (back, bp) == (0x2480, 76)
                         for y in range(h):
-                            front_row = uc.mem_read(target + src-0x2000 + y*sp, w*4)
-                            back_row = uc.mem_read(target + back-0x2000 + y*bp, w*4)
-                            out = bytearray(w*4)
-                            for j in range(w*4):
-                                alpha = front_row[j | 3]
-                                out[j] = round(front_row[j] + back_row[j] * (255-alpha) / 255)
-                            uc.mem_write(target + dst-0x2000 + y*dp, bytes(out))
+                            blend_row(target + src-0x2000 + y*sp, target + back-0x2000 + y*bp,
+                                      target + dst-0x2000 + y*dp, w)
                         if scenario == 'blend-math-error': write32(target + dst-0x2000, 0)
                         if scenario == 'blend-input-damage': write32(target + back-0x2000, 0)
                         if scenario == 'blend-boundary': write32(target + dst-0x2000 + w*4, 0)
@@ -316,7 +368,9 @@ def check(elf, scenario, reference):
                 uc.hook_add(UC_HOOK_CODE, code, begin=va+i, end=va+i)
     uc.reg_write(UC_ARM64_REG_SP, 0x50fff0)
     uc.reg_write(UC_ARM64_REG_LR, 0x2ff000)
-    special = {'panel-offset': 2, 'panel-invalid-mapping': 4, 'gles-capabilities': 5}
+    special = {'panel-offset': 2, 'panel-invalid-mapping': 4, 'gles-capabilities': 5,
+               'render-success': 6, 'render-padding': 6, 'render-flush-timeout': 6,
+               'render-invalid-page': 9}
     mode = special.get(scenario, int(is_panel))
     if scenario.startswith('blend-'):
         mode = 3
@@ -325,7 +379,7 @@ def check(elf, scenario, reference):
     assert uc.reg_read(UC_ARM64_REG_PC) == 0x2ff000, (scenario, 'did not terminate')
     result = uc.reg_read(UC_ARM64_REG_X0)
     if mode == 5:
-        assert result == 1 and jobs == [2, 9, 4, 'rect', 'blend']
+        assert result == 1 and jobs == [2, 9, 4, 'rect', 'blend', 'render']
         print(scenario + ': passed')
         return
     if is_panel:
@@ -338,13 +392,24 @@ def check(elf, scenario, reference):
         print(scenario + ': passed')
         return
     if mode == 3:
-        assert jobs == [2, 9, 4, 'rect', 'blend']
-        assert bool(result) == (scenario == 'blend-success'), (scenario, result)
+        success = scenario == 'blend-success'
+        assert jobs == [2, 9, 4, 'rect', 'blend'] + (['render'] if success else [])
+        assert result == (3 if success else 2), (scenario, result)
+        print(scenario + ': passed')
+        return
+    if mode in (6, 9):
+        expected = {'render-success': 3, 'render-padding': 2, 'render-flush-timeout': 0,
+                    'render-invalid-page': 2}
+        assert result == expected[scenario], (scenario, result)
+        assert jobs == [2, 9, 4, 'rect', 'blend'] + (['render'] if mode == 6 else [])
+        held = scenario == 'render-flush-timeout'
+        assert any(uc.mem_read(0x41000000, 32 * 4096)) == held
+        assert bool(values.get(0x2400, 0)) == held
         print(scenario + ': passed')
         return
     success_cases = ('success', 'deadline-completion', 'done-without-irq', 'late-irq', 'compute-slot2')
     assert bool(result) == (scenario in success_cases), (scenario, result)
-    if scenario in success_cases: assert jobs == [2, 9, 4, 'rect', 'blend', 9, 9] and complete
+    if scenario in success_cases: assert jobs == [2, 9, 4, 'rect', 'blend', 'render', 9, 9] and complete
     if scenario == 'missing-compute': assert jobs == [2, 9]
     if scenario.startswith('copy-'): assert jobs == [2, 9, 4]
     if scenario.startswith('rect-'): assert jobs == [2, 9, 4, 'rect']
@@ -397,7 +462,8 @@ def main():
                          'rect-tail', 'compute-slot2', 'blend-success', 'blend-math-error',
                          'blend-input-damage', 'blend-boundary', 'panel-frames', 'panel-offset',
                          'panel-readback-failure', 'panel-flush-timeout', 'panel-invalid-mapping',
-                         'gles-capabilities'):
+                         'gles-capabilities', 'render-success', 'render-padding', 'render-flush-timeout',
+                         'render-invalid-page'):
             check(data, scenario, reference)
 
 

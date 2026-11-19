@@ -11,7 +11,7 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 
 namespace S8Mali {
 #include "S8MaliCopyShader.h"
-enum JobKind { Write32, Copy16, Clear16, RectTest, PanelCopy, BlendTest };
+enum JobKind { Write32, Copy16, Clear16, RectTest, PanelCopy, BlendTest, BlendBuffers };
 static unsigned jobType(JobKind kind) {
 	return kind == Write32 ? 2 : kind == Clear16 ? 9 : 4;
 }
@@ -67,6 +67,23 @@ static bool ready, compositionVerified;
 static unsigned tests;
 enum { PAGE = 4096, SIZE = 7 * PAGE, COMMAND = 4 * PAGE, OUTPUT = 5 * PAGE };
 static const uint32_t POISON = 0xdeadbeef;
+static const uint64_t GpuDataXN = 3ULL << 53;
+
+static void cleanGpuRange(uintptr_t start, unsigned size) {
+	for (uintptr_t a = start & ~(uintptr_t)63; a < start + size; a += 64)
+		__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+static void invalidateGpuRange(uintptr_t start, unsigned size) {
+	for (uintptr_t a = start; a < start + size; a += 64)
+		__asm__ volatile("dc ivac, %0" :: "r"(a) : "memory");
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+} /* namespace S8Mali */
+#include "S8MaliBuffers.h"
+namespace S8Mali {
 
 static uint32_t rd(unsigned off) { return *(volatile uint32_t *)(regs + off); }
 static void wr(unsigned off, uint32_t v) {
@@ -97,14 +114,10 @@ static void dump(unsigned stage) {
 	    rd(0x160), rd(0x140), rd(0x220), rd(0x200));
 }
 static void clean() {
-	for (uintptr_t a = bytes; a < bytes + SIZE; a += 64)
-		__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
-	__asm__ volatile("dsb sy" ::: "memory");
+	cleanGpuRange(bytes, SIZE);
 }
 static void invalidate() {
-	for (uintptr_t a = bytes; a < bytes + SIZE; a += 64)
-		__asm__ volatile("dc ivac, %0" :: "r"(a) : "memory");
-	__asm__ volatile("dsb sy" ::: "memory");
+	invalidateGpuRange(bytes, SIZE);
 }
 
 /* Two GPU pages only: descriptors at 0x1000, target at 0x2000.
@@ -123,6 +136,11 @@ static void prepare(JobKind kind, uint32_t color, const Rectangle *rect, uint64_
 			l2[(PANEL_SRC >> 21) + i] = (leafPhys + i * PAGE) | 3;
 			l2[(PANEL_DST >> 21) + i] = (leafPhys + (TABLES_PER_SURFACE + i) * PAGE) | 3;
 		}
+	}
+	if (kind == BlendBuffers) {
+		volatile uint64_t *l2 = pt + 2 * PAGE / 8;
+		for (unsigned i = 0; i < RenderLeafCount; i++)
+			l2[(RenderBase >> 21) + i] = (leafPhys + i * PAGE) | 3;
 	}
 	volatile uint32_t *dst = (volatile uint32_t *)(bytes + OUTPUT);
 	for (unsigned i = 0; i < 2 * PAGE / 4; i++) dst[i] = POISON;
@@ -154,9 +172,10 @@ static void prepare(JobKind kind, uint32_t color, const Rectangle *rect, uint64_
 			job[0x700 / 4 + 5] = rect->height;
 			job[0x700 / 4 + 6] = rect->background;
 			job[0x700 / 4 + 7] = rect->backgroundStride;
-			const uint32_t *shader = kind == BlendTest ?
+			bool blend = kind == BlendTest || kind == BlendBuffers;
+			const uint32_t *shader = blend ?
 			    s8_mali_blend_shader : s8_mali_rectangle_shader;
-			const unsigned shaderBytes = kind == BlendTest ?
+			const unsigned shaderBytes = blend ?
 			    sizeof(s8_mali_blend_shader) : sizeof(s8_mali_rectangle_shader);
 			static_assert(sizeof(s8_mali_blend_shader) <= 0x800, "shader fits command page");
 			for (unsigned i = 0; i < shaderBytes / sizeof(uint32_t); i++)
@@ -316,10 +335,9 @@ cleanup:
 		if (irq) wr(0x1004, irq);
 		if (fault) wr(0x2004, fault);
 		for (unsigned i = 0; i < 5; i++) wr(js + jsOff[i], jsOld[i]);
-		if (mapped && kind == PanelCopy) {
-			/* Retire all translations and outstanding writes before releasing
-			 * an IOSurface or reusing its VA for a different surface. The
-			 * complete private VA range fits in [0, 128 MiB). */
+		if (mapped && (kind == PanelCopy || kind == BlendBuffers)) {
+			/* Retire outstanding writes and private mappings before freeing
+			 * buffers or reusing their GPU addresses. They fit below 128 MiB. */
 			wr(as + 0x10, 26); wr(as + 0x14, 0);
 			wr(as + 0x18, 2);
 			stopped = wait(as + 0x28, 1, 0);
@@ -353,11 +371,58 @@ cleanup:
 	}
 	if (quiesced) *quiesced = stopped;
 	if (kind != PanelCopy || !ok || !stopped) {
-		const char *names[] = {"write", "copy16", "clear16", "rect13x7", "panel-copy", "blend13x7"};
+		const char *names[] = {"write", "copy16", "clear16", "rect13x7", "panel-copy", "blend13x7",
+		    "blend-buffer-pages"};
 		IOLog("S8 MALI: runtime %s stage=%u irq=%x mmu=%x status=%x first=%x bad=%u us=%llu cleanup=%u\n",
 		    names[kind], stage, irq, fault, status, value, errors, elapsed / 26, stopped);
 	}
 	return ok && stopped;
+}
+
+/* Exercise the buffer allocator with separate read-only inputs
+ * and a writable output, spanning multiple independently wired pages. */
+static bool checkRenderBuffers(bool &stopped) {
+	static RenderAddressSpace space;
+	static RenderBuffer front, back, output;
+	if (!space.init()) return false;
+	bool result = false;
+	if (space.allocate(7 * PAGE, false, front) && space.allocate(7 * PAGE, false, back) &&
+	    space.allocate(7 * PAGE, true, output)) {
+		const Rectangle rect = {front.gpuAddress(), output.gpuAddress(), PAGE, PAGE - 16,
+		    blendRect.width, blendRect.height, back.gpuAddress(), PAGE + 16};
+		uint32_t *frontPixels = (uint32_t *)front.cpuAddress();
+		uint32_t *backPixels = (uint32_t *)back.cpuAddress();
+		uint32_t *outputPixels = (uint32_t *)output.cpuAddress();
+		for (unsigned y = 0; y < rect.height; ++y) {
+			for (unsigned x = 0; x < rect.width; ++x) {
+				frontPixels[y * rect.srcStride / 4 + x] = blendInput(false, x, y);
+				backPixels[y * rect.backgroundStride / 4 + x] = blendInput(true, x, y);
+			}
+		}
+		for (unsigned i = 0; i < output.size / 4; ++i) outputPixels[i] = POISON;
+		cleanGpuRange(front.cpuAddress(), front.size);
+		cleanGpuRange(back.cpuAddress(), back.size);
+		cleanGpuRange(output.cpuAddress(), output.size);
+		const bool done = run(BlendBuffers, 0, &rect, space.physical, &stopped);
+		unsigned bad = 0;
+		if (done) {
+			invalidateGpuRange(output.cpuAddress(), output.size);
+			for (unsigned i = 0; i < output.size / 4; ++i) {
+				unsigned x, y;
+				unsigned expected = rectCoords(rect.dst + i * 4, rect.dst, rect.dstStride, &rect, x, y)
+				    ? blendPixel(x, y) : POISON;
+				if (outputPixels[i] != expected) ++bad;
+			}
+		}
+		if (!stopped) return false; /* Static storage pins every live DMA target. */
+		result = done && !bad;
+	}
+	space.release(output);
+	space.release(back);
+	space.release(front);
+	space.tables->release();
+	space = {};
+	return result;
 }
 
 static void init() {
@@ -395,6 +460,10 @@ static void init() {
 		bool stopped = true;
 		compositionVerified = run(BlendTest, 0, &blendRect, 0, &stopped);
 		IOLog("S8 MALI: layer composition verified=%u\n", compositionVerified);
+		if (compositionVerified) {
+			compositionVerified = checkRenderBuffers(stopped);
+			IOLog("S8 MALI: separate buffer composition verified=%u\n", compositionVerified);
+		}
 		if (!stopped) ready = false;
 	}
 	IOLog("S8 MALI: runtime offscreen ready=%u\n", ready);

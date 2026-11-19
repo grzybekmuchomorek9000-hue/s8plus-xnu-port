@@ -8,7 +8,6 @@ namespace S8Mali {
 enum { PanelW = 1440, PanelH = 2960, SourcePitch = 5888, PanelPitch = 5760,
        LeafBytes = 2 * TABLES_PER_SURFACE * PAGE };
 static const uint64_t PanelPhys = 0xcc000000;
-static const uint64_t DataXN = 3ULL << 53;
 static IOBufferMemoryDescriptor *leafMemory, *mappedSource;
 static uint64_t leafPhysical;
 static bool panelEnabled, panelHeld;
@@ -17,12 +16,6 @@ static unsigned frames;
 static unsigned presentationHz(bool copiedOnGpu, bool copiedOnCpu, unsigned current) {
 	if (panelHeld || copiedOnCpu) return 10;
 	return copiedOnGpu ? 30 : current;
-}
-
-static void cleanRange(uintptr_t start, unsigned size) {
-	for (uintptr_t a = start; a < start + size; a += 64)
-		__asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
-	__asm__ volatile("dsb sy" ::: "memory");
 }
 
 /* Read-only GPU access to a wired pixel buffer. The caller owns the table,
@@ -40,10 +33,10 @@ static bool mapPixelBuffer(uint64_t *leaf, unsigned count, IOBufferMemoryDescrip
 		if (p > (1ULL << 36) - n ||
 		    (p < PanelPhys + PanelPitch * PanelH && p + n > PanelPhys)) return false;
 		for (unsigned pos = 0; pos < n; pos += PAGE)
-			leaf[(off + pos) / PAGE] = (p + pos) | DataXN | 0x241;
+			leaf[(off + pos) / PAGE] = (p + pos) | GpuDataXN | 0x241;
 		off += (unsigned)n;
 	}
-	cleanRange((uintptr_t)leaf, count * sizeof(*leaf));
+	cleanGpuRange((uintptr_t)leaf, count * sizeof(*leaf));
 	return true;
 }
 
@@ -65,8 +58,8 @@ static void enablePanel(uint64_t phys, unsigned w, unsigned h, unsigned stride) 
 	bzero((void *)base, LeafBytes);
 	uint64_t *panel = (uint64_t *)(base + LeafBytes / 2);
 	for (unsigned off = 0; off < PanelH * PanelPitch; off += PAGE)
-		panel[off / PAGE] = (PanelPhys + off) | DataXN | 0x281; /* write-only */
-	cleanRange(base, LeafBytes);
+		panel[off / PAGE] = (PanelPhys + off) | GpuDataXN | 0x281; /* write-only */
+	cleanGpuRange(base, LeafBytes);
 	panelEnabled = true;
 	IOLog("S8 MALI: panel presenter armed %ux%u src-bpr=%u dst-bpr=%u\n",
 	    PanelW, PanelH, SourcePitch, PanelPitch);
@@ -105,7 +98,7 @@ static bool presentPanel(SweetSurface *surface, uintptr_t panel, int sx, int sy,
 		IOLog("S8 MALI: panel source map failed, using CPU\n");
 		return false;
 	}
-	cleanRange(pixels, SourcePitch * PanelH);
+	cleanGpuRange(pixels, SourcePitch * PanelH);
 	const Rectangle rect = {PANEL_SRC, PANEL_DST, SourcePitch, PanelPitch, PanelW, PanelH, 0, 0};
 	bool quiesced = true;
 	bool ok = run(PanelCopy, 0, &rect, leafPhysical, &quiesced);
