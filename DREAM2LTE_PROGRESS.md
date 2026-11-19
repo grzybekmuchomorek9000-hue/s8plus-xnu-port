@@ -599,3 +599,20 @@ memory map, GPU, display-panel or touch support has been established.
 - A read-only probe verified the live 16 GiB HFSX volume is journaled.
   Recovery lacks the HFS+ module. No filesystem changes were made to
   the active volume.
+- The signed client and LaunchDaemon were staged on a copy-on-write
+  HFSX image. A read-only remount verified the executable hash and
+  root-owned modes 0755 and 0644. The private overlay is
+  `research/linux-builder/compositor-stage-44561604690/ios-test.qcow2`
+  under the original local project. The phone differed on 50 of the
+  128 pages touched by that overlay. USB disconnected repeatedly
+  during a fresh read, including when ADB pulled a file from TWRP's RAM.
+  The incomplete copies were discarded. The overlay applies to its
+  local base image only.
+- XNU build `44561605431` at `793a528` succeeded. The kernel SHA-256
+  is `4e13ea250929295aab42e7954a3a11c8af14944bd0844823f75659a88e149c1b`.
+  Prepared `s8plus-ios-mali-iokit-v9-boot.img` with the opt-in service
+  and SHA-256 `6eeb4a76001930d2d9a4a9087143d3ba2b66e0f7fec731f870ba3faa430f7722`.
+  It is on the host. The last hardware-confirmed BOOT is v8. Registration
+  of the service and launch of the signed probe by this iOS installation
+  still require a runtime test. The opt-in service supports fixed layer
+  composition. Mesa and Core Animation do not submit through it yet.
