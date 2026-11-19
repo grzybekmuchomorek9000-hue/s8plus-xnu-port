@@ -536,3 +536,15 @@ memory map, GPU, display-panel or touch support has been established.
   covers high bits in 64-bit masks and rejects unsupported indices.
   G71 BO allocation, job submission from a Mesa context and safe
   IOSurface sharing remain separate from these capability queries.
+- Final checksummed GLES package `44548115669` contains the test,
+  `libOSMesa.8.dylib` and `libdrm.2.dylib`. It remains on the host.
+- Device build `44546104260` at `91dee65` succeeded. The ARM64 kernel
+  contains the exact compiled blend shader, with SHA-256
+  `c5e8c300af473b26443812bceafd5932b505b9d1b6a1a9a9b365f4ef12eb26f2`
+  for the linked kernel. The later capability-query change was tested on
+  Windows and is not part of this boot image.
+- Wrote `s8plus-ios-mali-layer-v7-boot.img` with SHA-256
+  `8a3e3f9049ef618e4776cdefa428e7970904ab5d8db49a2784258840e814a7e5`.
+  The full BOOT readback was
+  `c209b6c8b5fd8c29553c857a2482e4fd911aa54aca2d9b0480658d2f3edd94b9`.
+  Requested iOS boot followed by return to TWRP for results.
